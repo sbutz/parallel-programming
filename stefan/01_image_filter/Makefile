@@ -20,25 +20,22 @@ $(OBJDIR)/%.o: %.cu jpeg.h util.h
 	$(NVCC) $(NVCC_FLAGS) -c -o $@ $<
 
 # Grayscale filter
-$(OBJDIR)/filter_bw: $(OBJDIR)/filter_bw.o
+$(OBJDIR)/grayscale: $(OBJDIR)/grayscale.o
 	$(NVCC) $(GENCODE_FLAGS) -o $@ $(NVCC_LDFLAGS) $^
 
-$(OBJDIR)/image_sw.jpg: $(OBJDIR)/filter_bw image.jpg
-	$(OBJDIR)/filter_bw image.jpg $@
+$(OBJDIR)/image_sw.jpg: $(OBJDIR)/grayscale image.jpg
+	$(OBJDIR)/grayscale image.jpg $@
 
-# Grayscale blur
-$(OBJDIR)/blur_bw: $(OBJDIR)/blur_bw.o
+# Blur
+$(OBJDIR)/blur: $(OBJDIR)/blur.o
 	$(NVCC) $(GENCODE_FLAGS) -o $@ $(NVCC_LDFLAGS) $^
 
-$(OBJDIR)/blur_bw.jpg: $(OBJDIR)/blur_bw $(OBJDIR)/image_sw.jpg
-	$(OBJDIR)/blur_bw $(OBJDIR)/image_sw.jpg $@
+MARGIN=8
+$(OBJDIR)/blur_bw.jpg: $(OBJDIR)/blur $(OBJDIR)/image_sw.jpg
+	$(OBJDIR)/blur $(MARGIN) $(OBJDIR)/image_sw.jpg $@
 
-# Grayscale rgb blur
-$(OBJDIR)/blur_rgb: $(OBJDIR)/blur_rgb.o
-	$(NVCC) $(GENCODE_FLAGS) -o $@ $(NVCC_LDFLAGS) $^
-
-$(OBJDIR)/blur_rgb.jpg: $(OBJDIR)/blur_rgb image.jpg
-	$(OBJDIR)/blur_rgb image.jpg $@
+$(OBJDIR)/blur_rgb.jpg: $(OBJDIR)/blur image.jpg
+	$(OBJDIR)/blur $(MARGIN) image.jpg $@
 
 
 all: $(OBJDIR)/image_sw.jpg $(OBJDIR)/blur_bw.jpg $(OBJDIR)/blur_rgb.jpg
