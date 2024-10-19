@@ -37,27 +37,27 @@ int main(int argc, char* argv[])
     auto height = hInputImage.GetHeight();
     auto width = hInputImage.GetWidth();
     auto channels = hInputImage.GetChannels();
-    Assert(channels == 3, "Expecting an rgb image");
+    ASSERT(channels == 3, "Expecting an rgb image");
 
     unsigned char *dInputImage, *dOutputImage;
-    GpuAssert(cudaMalloc((void**)&dInputImage, width * height * channels));
-    GpuAssert(cudaMalloc((void**)&dOutputImage, width * height));
+    CUDA_ASSERT(cudaMalloc((void**)&dInputImage, width * height * channels));
+    CUDA_ASSERT(cudaMalloc((void**)&dOutputImage, width * height));
 
-    GpuAssert(cudaMemcpy(dInputImage, hInputImage.GetRawData(), width * height * channels, cudaMemcpyHostToDevice));
+    CUDA_ASSERT(cudaMemcpy(dInputImage, hInputImage.GetRawData(), width * height * channels, cudaMemcpyHostToDevice));
 
     dim3 blockSize(16, 16);
     dim3 gridSize((width + blockSize.x - 1) / blockSize.x, (height + blockSize.y - 1) / blockSize.y);
 
     RgbToGrayscale<<<gridSize, blockSize>>>(dInputImage, dOutputImage, width, height);
-    GpuAssert(cudaGetLastError());
-    GpuAssert(cudaDeviceSynchronize());
+    CUDA_ASSERT(cudaGetLastError());
+    CUDA_ASSERT(cudaDeviceSynchronize());
 
     Jpeg hOutputImage{width, height, 1};
-    GpuAssert(cudaMemcpy(hOutputImage.GetRawData(), dOutputImage, width * height, cudaMemcpyDeviceToHost));
+    CUDA_ASSERT(cudaMemcpy(hOutputImage.GetRawData(), dOutputImage, width * height, cudaMemcpyDeviceToHost));
     hOutputImage.Save(outputFilename);
 
-    GpuAssert(cudaFree(dInputImage));
-    GpuAssert(cudaFree(dOutputImage));
+    CUDA_ASSERT(cudaFree(dInputImage));
+    CUDA_ASSERT(cudaFree(dOutputImage));
 
     return 0;
 }
