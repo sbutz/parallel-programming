@@ -19,15 +19,29 @@ $(OBJDIR)/%.o: %.cu jpeg.h util.h
 	@mkdir -p $(OBJDIR)
 	$(NVCC) $(NVCC_FLAGS) -c -o $@ $<
 
+# Grayscale filter
 $(OBJDIR)/filter_bw: $(OBJDIR)/filter_bw.o
 	$(NVCC) $(GENCODE_FLAGS) -o $@ $(NVCC_LDFLAGS) $^
 
+$(OBJDIR)/image_sw.jpg: $(OBJDIR)/filter_bw image.jpg
+	$(OBJDIR)/filter_bw image.jpg $@
+
+# Grayscale blur
 $(OBJDIR)/blur_bw: $(OBJDIR)/blur_bw.o
 	$(NVCC) $(GENCODE_FLAGS) -o $@ $(NVCC_LDFLAGS) $^
 
-run: $(OBJDIR)/filter_bw $(OBJDIR)/blur_bw image.jpg
-	$(OBJDIR)/filter_bw image.jpg $(OBJDIR)/image_sw.jpg
-	$(OBJDIR)/blur_bw $(OBJDIR)/image_sw.jpg $(OBJDIR)/blur_bw.jpg
+$(OBJDIR)/blur_bw.jpg: $(OBJDIR)/blur_bw $(OBJDIR)/image_sw.jpg
+	$(OBJDIR)/blur_bw $(OBJDIR)/image_sw.jpg $@
+
+# Grayscale rgb blur
+$(OBJDIR)/blur_rgb: $(OBJDIR)/blur_rgb.o
+	$(NVCC) $(GENCODE_FLAGS) -o $@ $(NVCC_LDFLAGS) $^
+
+$(OBJDIR)/blur_rgb.jpg: $(OBJDIR)/blur_rgb image.jpg
+	$(OBJDIR)/blur_rgb image.jpg $@
+
+
+all: $(OBJDIR)/image_sw.jpg $(OBJDIR)/blur_bw.jpg $(OBJDIR)/blur_rgb.jpg
 
 .PHONY.: clean
 clean:
