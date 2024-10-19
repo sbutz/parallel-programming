@@ -1,1 +1,3 @@
 .DS_Store
+*.nsys-rep
+*.sqlite

@@ -4,7 +4,8 @@
 #include <cuda.h>
 #include <iostream>
 
-__global__ void RgbToGrayscale(unsigned char* inputImage, unsigned char* outputImage, int width, int height) {
+__global__ void RgbToGrayscale(unsigned char *inputImage, unsigned char *outputImage, int width,
+                               int height) {
     int x = blockIdx.x * blockDim.x + threadIdx.x;
     int y = blockIdx.y * blockDim.y + threadIdx.y;
     int idx = y * width + x;
@@ -22,16 +23,16 @@ __global__ void RgbToGrayscale(unsigned char* inputImage, unsigned char* outputI
     }
 }
 
-int main(int argc, char* argv[])
-{
-    if (argc != 3)
-    {
+int main(int argc, char *argv[]) {
+    if (argc != 3) {
         std::cerr << "Usage: " << argv[0] << " input.jpg output.jpg" << std::endl;
         return 1;
     }
 
-    const char* inputFilename = argv[1];
-    const char* outputFilename = argv[2];
+    cudaInit();
+
+    const char *inputFilename = argv[1];
+    const char *outputFilename = argv[2];
 
     auto hInputImage = Jpeg::FromFile(inputFilename);
     auto height = hInputImage.GetHeight();
@@ -40,20 +41,23 @@ int main(int argc, char* argv[])
     ASSERT(channels == 3, "Expecting an rgb image");
 
     unsigned char *dInputImage, *dOutputImage;
-    CUDA_ASSERT(cudaMalloc((void**)&dInputImage, width * height * channels));
-    CUDA_ASSERT(cudaMalloc((void**)&dOutputImage, width * height));
+    CUDA_ASSERT(cudaMalloc((void **)&dInputImage, width * height * channels));
+    CUDA_ASSERT(cudaMalloc((void **)&dOutputImage, width * height));
 
-    CUDA_ASSERT(cudaMemcpy(dInputImage, hInputImage.GetRawData(), width * height * channels, cudaMemcpyHostToDevice));
+    CUDA_ASSERT(cudaMemcpy(dInputImage, hInputImage.GetRawData(), width * height * channels,
+                           cudaMemcpyHostToDevice));
 
     dim3 blockSize(16, 16);
-    dim3 gridSize((width + blockSize.x - 1) / blockSize.x, (height + blockSize.y - 1) / blockSize.y);
+    dim3 gridSize((width + blockSize.x - 1) / blockSize.x,
+                  (height + blockSize.y - 1) / blockSize.y);
 
     RgbToGrayscale<<<gridSize, blockSize>>>(dInputImage, dOutputImage, width, height);
     CUDA_ASSERT(cudaGetLastError());
     CUDA_ASSERT(cudaDeviceSynchronize());
 
     Jpeg hOutputImage{width, height, 1};
-    CUDA_ASSERT(cudaMemcpy(hOutputImage.GetRawData(), dOutputImage, width * height, cudaMemcpyDeviceToHost));
+    CUDA_ASSERT(cudaMemcpy(hOutputImage.GetRawData(), dOutputImage, width * height,
+                           cudaMemcpyDeviceToHost));
     hOutputImage.Save(outputFilename);
 
     CUDA_ASSERT(cudaFree(dInputImage));
