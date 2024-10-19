@@ -33,6 +33,8 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
+    cudaInit();
+
     int margin = std::atoi(argv[1]);
     const char *inputFilename = argv[2];
     const char *outputFilename = argv[3];
