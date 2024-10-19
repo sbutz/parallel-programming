@@ -4,7 +4,7 @@
 #include <cuda.h>
 #include <iostream>
 
-__global__ void BlurGrayscale(unsigned char* inputImage, unsigned char* outputImage, int width, int height, int margin) {
+__global__ void Blur(unsigned char* inputImage, unsigned char* outputImage, int width, int height, int channels, int margin) {
     int x = blockIdx.x * blockDim.x + threadIdx.x;
     int y = blockIdx.y * blockDim.y + threadIdx.y;
 
@@ -14,16 +14,22 @@ __global__ void BlurGrayscale(unsigned char* inputImage, unsigned char* outputIm
         int startY = max(y - margin, 0);
         int endY = min(y + margin, height);
 
-        float v = 0;
+        float r = 0;
+        float g = 0;
+        float b = 0;
         for (int i = startY; i < endY; i++)
         {
             for (int j = startX; j < endX; j++)
             {
-                v += inputImage[i * width + j];
+                r += inputImage[(i * width + j) * channels + 0];
+                g += inputImage[(i * width + j) * channels + 1];
+                b += inputImage[(i * width + j) * channels + 2];
             }
         }
         float n = (endX - startX) * (endY - startY);
-        outputImage[y * width + x] = v / n;
+        outputImage[(y * width + x) * channels + 0] = r / n;
+        outputImage[(y * width + x) * channels + 1] = g / n;
+        outputImage[(y * width + x) * channels + 2] = b / n;
     }
 }
 
@@ -42,11 +48,11 @@ int main(int argc, char* argv[])
     auto height = hInputImage.GetHeight();
     auto width = hInputImage.GetWidth();
     auto channels = hInputImage.GetChannels();
-    Assert(channels == 1, "Expecting Grayscale Image");
+    Assert(channels == 3, "Expecting rgb image");
 
     unsigned char *dInputImage, *dOutputImage;
-    GpuAssert(cudaMalloc((void**)&dInputImage, width * height * channels));
-    GpuAssert(cudaMalloc((void**)&dOutputImage, width * height));
+    GpuAssert(cudaMalloc((void**)&dInputImage, width * height * channels * sizeof(float)));
+    GpuAssert(cudaMalloc((void**)&dOutputImage, width * height * channels * sizeof(float)));
 
     GpuAssert(cudaMemcpy(dInputImage, hInputImage.GetRawData(), width * height * channels, cudaMemcpyHostToDevice));
 
@@ -54,12 +60,12 @@ int main(int argc, char* argv[])
     dim3 gridSize((width + blockSize.x - 1) / blockSize.x, (height + blockSize.y - 1) / blockSize.y);
     int margin = 8;
 
-    BlurGrayscale<<<gridSize, blockSize>>>(dInputImage, dOutputImage, width, height, margin);
+    Blur<<<gridSize, blockSize>>>(dInputImage, dOutputImage, width, height, channels, margin);
     GpuAssert(cudaGetLastError());
     GpuAssert(cudaDeviceSynchronize());
 
     Jpeg hOutputImage{width, height, channels};
-    GpuAssert(cudaMemcpy(hOutputImage.GetRawData(), dOutputImage, width * height, cudaMemcpyDeviceToHost));
+    GpuAssert(cudaMemcpy(hOutputImage.GetRawData(), dOutputImage, width * height * channels, cudaMemcpyDeviceToHost));
     hOutputImage.Save(outputFilename);
 
     GpuAssert(cudaFree(dInputImage));

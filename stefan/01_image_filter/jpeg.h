@@ -24,7 +24,7 @@ class Jpeg
         cinfo.err = jpeg_std_error(&jerr);
         jpeg_create_decompress(&cinfo);
         jpeg_stdio_src(&cinfo, infile);
-        jpeg_read_header(&cinfo, TRUE);
+        Assert(jpeg_read_header(&cinfo, TRUE) == 1, "Invalid Jpeg");
         jpeg_start_decompress(&cinfo);
 
         SizeType width = cinfo.output_width;
@@ -49,7 +49,7 @@ class Jpeg
     Jpeg(SizeType width, SizeType height, SizeType channels)
         : data_{}, width_{width}, height_{height}, channels_{channels}
     {
-        data_.reserve(width_*height_);
+        data_.reserve(width_*height_*channels_);
     }
 
     Jpeg(ImageType&& data, SizeType width, SizeType height, SizeType channels)
@@ -78,15 +78,16 @@ class Jpeg
 
         cinfo.image_width = width_;
         cinfo.image_height = height_;
-        cinfo.input_components = 1; // Grayscale image
-        cinfo.in_color_space = JCS_GRAYSCALE;
+        Assert(channels_ == 1 || channels_ == 3, "Only rgb and grayscale supported");
+        cinfo.input_components = channels_;
+        cinfo.in_color_space = channels_ == 1 ? JCS_GRAYSCALE : JCS_RGB;
 
         jpeg_set_defaults(&cinfo);
         jpeg_set_quality(&cinfo, 100, TRUE);
         jpeg_start_compress(&cinfo, TRUE);
 
         while (cinfo.next_scanline < height_) {
-            JSAMPROW ptr = &data_[cinfo.next_scanline * width_];
+            JSAMPROW ptr = &data_[cinfo.next_scanline * width_*channels_];
             jpeg_write_scanlines(&cinfo, &ptr, 1);
         }
 
