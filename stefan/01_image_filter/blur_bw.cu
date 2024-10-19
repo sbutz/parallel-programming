@@ -4,21 +4,26 @@
 #include <cuda.h>
 #include <iostream>
 
-__global__ void RgbToGrayscale(unsigned char* inputImage, unsigned char* outputImage, int width, int height) {
+__global__ void BlurGrayscale(unsigned char* inputImage, unsigned char* outputImage, int width, int height, int margin) {
     int x = blockIdx.x * blockDim.x + threadIdx.x;
     int y = blockIdx.y * blockDim.y + threadIdx.y;
-    int idx = y * width + x;
 
     if (x < width && y < height) {
-        int rgb_idx = idx * 3;
+        int startX = max(x - margin, 0);
+        int endX = min(x + margin, width - 1);
+        int startY = max(y - margin, 0);
+        int endY = min(y + margin, height - 1);
 
-        unsigned char r = inputImage[rgb_idx];
-        unsigned char g = inputImage[rgb_idx + 1];
-        unsigned char b = inputImage[rgb_idx + 2];
-
-        unsigned char gray = static_cast<unsigned char>(0.299f * r + 0.587f * g + 0.114f * b);
-
-        outputImage[idx] = gray;
+        float v = 0;
+        for (int i = startY; i < endY; i++)
+        {
+            for (int j = startX; j < endX; j++)
+            {
+                v += inputImage[i * width + j];
+            }
+        }
+        float n = (endX - startX) * (endY - startY);
+        outputImage[y * width + x] = v / n;
     }
 }
 
@@ -37,7 +42,7 @@ int main(int argc, char* argv[])
     auto height = hInputImage.GetHeight();
     auto width = hInputImage.GetWidth();
     auto channels = hInputImage.GetChannels();
-    Assert(channels == 3, "Expecting an rgb image");
+    Assert(channels == 1, "Expecting Grayscale Image");
 
     unsigned char *dInputImage, *dOutputImage;
     GpuAssert(cudaMalloc((void**)&dInputImage, width * height * channels));
@@ -47,12 +52,13 @@ int main(int argc, char* argv[])
 
     dim3 blockSize(16, 16);
     dim3 gridSize((width + blockSize.x - 1) / blockSize.x, (height + blockSize.y - 1) / blockSize.y);
+    int margin = 8;
 
-    RgbToGrayscale<<<gridSize, blockSize>>>(dInputImage, dOutputImage, width, height);
+    BlurGrayscale<<<gridSize, blockSize>>>(dInputImage, dOutputImage, width, height, margin);
     GpuAssert(cudaGetLastError());
     GpuAssert(cudaDeviceSynchronize());
 
-    Jpeg hOutputImage{width, height, 1};
+    Jpeg hOutputImage{width, height, channels};
     GpuAssert(cudaMemcpy(hOutputImage.GetRawData(), dOutputImage, width * height, cudaMemcpyDeviceToHost));
     hOutputImage.Save(outputFilename);
 
