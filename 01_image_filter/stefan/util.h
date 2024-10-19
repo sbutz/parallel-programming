@@ -16,6 +16,13 @@ inline void CudaAssert(cudaError_t code, const char *file, int line) {
     Assert(code == cudaSuccess, cudaGetErrorString(code), file, line);
 }
 
+void cudaInit() {
+    // The first access of the gpu is initializing the driver etc.
+    // To untaint the performance reports to capture all startup overhead in cudaFree().
+    // See ../REAMDE.md.
+    CUDA_ASSERT(cudaFree(0));
+}
+
 // Prefer using nvprof (or nsys profile)
 #define CUDA_TRACE_START(key)                                                                      \
     float time_##key;                                                                              \
