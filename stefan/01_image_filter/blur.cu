@@ -48,24 +48,37 @@ int main(int argc, char* argv[])
     auto channels = hInputImage.GetChannels();
 
     unsigned char *dInputImage, *dOutputImage;
-    GpuAssert(cudaMalloc((void**)&dInputImage, width * height * channels * sizeof(float)));
-    GpuAssert(cudaMalloc((void**)&dOutputImage, width * height * channels * sizeof(float)));
+    CUDA_ASSERT(cudaMalloc((void**)&dInputImage, width * height * channels * sizeof(float)));
+    CUDA_ASSERT(cudaMalloc((void**)&dOutputImage, width * height * channels * sizeof(float)));
 
-    GpuAssert(cudaMemcpy(dInputImage, hInputImage.GetRawData(), width * height * channels, cudaMemcpyHostToDevice));
+    float time;
+    cudaEvent_t start, stop;
+    CUDA_ASSERT(cudaEventCreate(&start) );
+    CUDA_ASSERT(cudaEventCreate(&stop) );
+    CUDA_ASSERT(cudaEventRecord(start, 0) );
+
+    CUDA_ASSERT(cudaMemcpy(dInputImage, hInputImage.GetRawData(), width * height * channels, cudaMemcpyHostToDevice));
+
+    CUDA_ASSERT(cudaEventRecord(stop, 0) );
+    CUDA_ASSERT(cudaEventSynchronize(stop) );
+    CUDA_ASSERT(cudaEventElapsedTime(&time, start, stop) );
+
+    std::cout << "Elapsed time: " << time << "ms" << std::endl;
+
 
     dim3 blockSize(16, 16, channels);
     dim3 gridSize((width + blockSize.x - 1) / blockSize.x, (height + blockSize.y - 1) / blockSize.y);
 
     Blur<<<gridSize, blockSize>>>(dInputImage, dOutputImage, width, height, channels, margin);
-    GpuAssert(cudaGetLastError());
-    GpuAssert(cudaDeviceSynchronize());
+    CUDA_ASSERT(cudaGetLastError());
+    CUDA_ASSERT(cudaDeviceSynchronize());
 
     Jpeg hOutputImage{width, height, channels};
-    GpuAssert(cudaMemcpy(hOutputImage.GetRawData(), dOutputImage, width * height * channels, cudaMemcpyDeviceToHost));
+    CUDA_ASSERT(cudaMemcpy(hOutputImage.GetRawData(), dOutputImage, width * height * channels, cudaMemcpyDeviceToHost));
     hOutputImage.Save(outputFilename);
 
-    GpuAssert(cudaFree(dInputImage));
-    GpuAssert(cudaFree(dOutputImage));
+    CUDA_ASSERT(cudaFree(dInputImage));
+    CUDA_ASSERT(cudaFree(dOutputImage));
 
     return 0;
 }

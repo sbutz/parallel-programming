@@ -16,7 +16,7 @@ class Jpeg
     static Jpeg FromFile(const char* filename)
     {
         FILE* infile = fopen(filename, "rb");
-        Assert(infile, "Failed to open file");
+        ASSERT(infile, "Failed to open file");
 
         struct jpeg_decompress_struct cinfo;
         struct jpeg_error_mgr jerr;
@@ -24,7 +24,7 @@ class Jpeg
         cinfo.err = jpeg_std_error(&jerr);
         jpeg_create_decompress(&cinfo);
         jpeg_stdio_src(&cinfo, infile);
-        Assert(jpeg_read_header(&cinfo, TRUE) == 1, "Invalid Jpeg");
+        ASSERT(jpeg_read_header(&cinfo, TRUE) == 1, "Invalid Jpeg");
         jpeg_start_decompress(&cinfo);
 
         SizeType width = cinfo.output_width;
@@ -67,7 +67,7 @@ class Jpeg
 
     void Save(const char* filename) {
         FILE* outfile = fopen(filename, "wb");
-        Assert(outfile, "Failed to open file");
+        ASSERT(outfile, "Failed to open file");
 
         struct jpeg_compress_struct cinfo;
         struct jpeg_error_mgr jerr;
@@ -78,7 +78,7 @@ class Jpeg
 
         cinfo.image_width = width_;
         cinfo.image_height = height_;
-        Assert(channels_ == 1 || channels_ == 3, "Only rgb and grayscale supported");
+        ASSERT(channels_ == 1 || channels_ == 3, "Only rgb and grayscale supported");
         cinfo.input_components = channels_;
         cinfo.in_color_space = channels_ == 1 ? JCS_GRAYSCALE : JCS_RGB;
 
