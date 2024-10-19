@@ -15,15 +15,19 @@ NVCC_LDFLAGS = -ccbin=g++  -lcuda -lcudart -ljpeg
 
 OBJDIR=./build
 
-$(OBJDIR)/%.o: %.cu
+$(OBJDIR)/%.o: %.cu jpeg.h util.h
 	@mkdir -p $(OBJDIR)
 	$(NVCC) $(NVCC_FLAGS) -c -o $@ $<
 
 $(OBJDIR)/filter_bw: $(OBJDIR)/filter_bw.o
 	$(NVCC) $(GENCODE_FLAGS) -o $@ $(NVCC_LDFLAGS) $^
 
-run: $(OBJDIR)/filter_bw image.jpg
-	$(OBJDIR)/filter_bw image.jpg build/image_sw.jpg
+$(OBJDIR)/blur_bw: $(OBJDIR)/blur_bw.o
+	$(NVCC) $(GENCODE_FLAGS) -o $@ $(NVCC_LDFLAGS) $^
+
+run: $(OBJDIR)/filter_bw $(OBJDIR)/blur_bw image.jpg
+	$(OBJDIR)/filter_bw image.jpg $(OBJDIR)/image_sw.jpg
+	$(OBJDIR)/blur_bw $(OBJDIR)/image_sw.jpg $(OBJDIR)/blur_bw.jpg
 
 .PHONY.: clean
 clean:

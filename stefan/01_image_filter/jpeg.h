@@ -29,13 +29,13 @@ class Jpeg
 
         SizeType width = cinfo.output_width;
         SizeType height = cinfo.output_height;
-        SizeType numChannels = cinfo.output_components;
+        SizeType channels = cinfo.output_components;
 
         ImageType imageData;
-        imageData.reserve(width * height * numChannels);
+        imageData.reserve(width * height * channels);
 
         while (cinfo.output_scanline < height) {
-            JSAMPROW ptr = &imageData[cinfo.output_scanline * width * numChannels];
+            JSAMPROW ptr = &imageData[cinfo.output_scanline * width * channels];
             jpeg_read_scanlines(&cinfo, &ptr, 1);
         }
 
@@ -43,17 +43,17 @@ class Jpeg
         jpeg_destroy_decompress(&cinfo);
         fclose(infile);
 
-        return Jpeg(std::move(imageData), width, height);
+        return Jpeg(std::move(imageData), width, height, channels);
     }
 
-    Jpeg(SizeType width, SizeType height)
-        : data_{}, width_{width}, height_{height}
+    Jpeg(SizeType width, SizeType height, SizeType channels)
+        : data_{}, width_{width}, height_{height}, channels_{channels}
     {
         data_.reserve(width_*height_);
     }
 
-    Jpeg(ImageType&& data, SizeType width, SizeType height)
-        :data_{std::move(data)}, width_{width}, height_{height}
+    Jpeg(ImageType&& data, SizeType width, SizeType height, SizeType channels)
+        :data_{std::move(data)}, width_{width}, height_{height}, channels_{channels}
     {
     }
 
@@ -62,6 +62,8 @@ class Jpeg
     SizeType GetWidth() { return width_; }
 
     SizeType GetHeight() { return height_; }
+
+    SizeType GetChannels() { return channels_; }
 
     void Save(const char* filename) {
         FILE* outfile = fopen(filename, "wb");
@@ -95,6 +97,7 @@ class Jpeg
 
  private:
     std::vector<ValueType> data_;
-    std::uint32_t width_;
-    std::uint32_t height_;
+    SizeType width_;
+    SizeType height_;
+    SizeType channels_;
 };
