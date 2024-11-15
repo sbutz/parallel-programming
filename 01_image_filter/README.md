@@ -21,7 +21,7 @@ Possible Optimizations:
 Test command:
 ```bash
 make -C ./stefan all
-nsys profile --status=true ./stefan/build/blur MARGIN INPUT_IMAGE OUTPUT_IMAGE
+nsys profile --stats=true ./stefan/build/blur MARGIN INPUT_IMAGE OUTPUT_IMAGE
 ```
 
 To reduce test cases and only one parameter is changed in each run.
