@@ -19,26 +19,21 @@ $(OBJDIR)/%.o: %.cu jpeg.h util.h
 	@mkdir -p $(OBJDIR)
 	$(NVCC) $(NVCC_FLAGS) -c -o $@ $<
 
-# Grayscale filter
-$(OBJDIR)/grayscale: $(OBJDIR)/grayscale.o
+$(OBJDIR)/%: $(OBJDIR)/%.o
 	$(NVCC) $(GENCODE_FLAGS) -o $@ $(NVCC_LDFLAGS) $^
 
-$(OBJDIR)/image_sw.jpg: $(OBJDIR)/grayscale image.jpg
-	$(OBJDIR)/grayscale image.jpg $@
 
-# Blur
-$(OBJDIR)/blur: $(OBJDIR)/blur.o
-	$(NVCC) $(GENCODE_FLAGS) -o $@ $(NVCC_LDFLAGS) $^
+KERNELS = $(OBJDIR)/01_grayscale \
+	 $(OBJDIR)/02_blur \
+
+all: $(KERNELS)
 
 MARGIN=8
-$(OBJDIR)/blur_bw.jpg: $(OBJDIR)/blur $(OBJDIR)/image_sw.jpg
-	$(OBJDIR)/blur $(MARGIN) $(OBJDIR)/image_sw.jpg $@
-
-$(OBJDIR)/blur_rgb.jpg: $(OBJDIR)/blur image.jpg
-	$(OBJDIR)/blur $(MARGIN) image.jpg $@
-
-
-all: $(OBJDIR)/image_sw.jpg $(OBJDIR)/blur_bw.jpg $(OBJDIR)/blur_rgb.jpg
+NVPROF=nsys profile --stats=true --output="./build/report%n"
+run: $(KERNELS)
+	$(NVPROF) $(OBJDIR)/01_grayscale image.jpg $(OBJDIR)/image_sw.jpg
+	$(NVPROF) $(OBJDIR)/02_blur $(MARGIN) $(OBJDIR)/image_sw.jpg $(OBJDIR)/blur_bw.jpg
+	$(NVPROF) $(OBJDIR)/02_blur $(MARGIN) image.jpg $(OBJDIR)/blur_rgb.jpg
 
 .PHONY.: clean
 clean:

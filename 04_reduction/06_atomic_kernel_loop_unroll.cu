@@ -1,5 +1,4 @@
 #include "util.h"
-#include <__clang_cuda_builtin_vars.h>
 #include <cstdlib>
 #include <cuda.h>
 #include <iostream>

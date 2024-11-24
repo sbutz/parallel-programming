@@ -1,8 +1,9 @@
 #include "jpeg.h"
 #include "util.h"
-#include <cstdint>
 #include <cuda.h>
 #include <iostream>
+
+static constexpr std::size_t N_ITERATIONS = 16;
 
 __global__ void RgbToGrayscale(unsigned char *inputImage, unsigned char *outputImage, int width,
                                int height) {
@@ -23,17 +24,7 @@ __global__ void RgbToGrayscale(unsigned char *inputImage, unsigned char *outputI
     }
 }
 
-int main(int argc, char *argv[]) {
-    if (argc != 3) {
-        std::cerr << "Usage: " << argv[0] << " input.jpg output.jpg" << std::endl;
-        return 1;
-    }
-
-    cudaInit();
-
-    const char *inputFilename = argv[1];
-    const char *outputFilename = argv[2];
-
+void Filter(const char *inputFilename, const char *outputFilename) {
     auto hInputImage = Jpeg::FromFile(inputFilename);
     auto height = hInputImage.GetHeight();
     auto width = hInputImage.GetWidth();
@@ -62,6 +53,23 @@ int main(int argc, char *argv[]) {
 
     CUDA_ASSERT(cudaFree(dInputImage));
     CUDA_ASSERT(cudaFree(dOutputImage));
+}
+
+int main(int argc, char *argv[]) {
+    if (argc != 3) {
+        std::cerr << "Usage: " << argv[0] << " input.jpg output.jpg" << std::endl;
+        return 1;
+    }
+
+    cudaInit();
+
+    const char *inputFilename = argv[1];
+    const char *outputFilename = argv[2];
+
+    std::size_t input_size = std::atoi(argv[1]);
+    for (auto i = 0; i < N_ITERATIONS; i++) {
+        Filter(inputFilename, outputFilename);
+    }
 
     return 0;
 }

@@ -19,52 +19,27 @@ $(OBJDIR)/%.o: %.cu util.h
 	@mkdir -p $(OBJDIR)
 	$(NVCC) $(NVCC_FLAGS) -c -o $@ $<
 
-# Seperate Kernels
-$(OBJDIR)/01_seperate_kernels: $(OBJDIR)/01_seperate_kernels.o
+$(OBJDIR)/%: $(OBJDIR)/%.o
 	$(NVCC) $(GENCODE_FLAGS) -o $@ $(NVCC_LDFLAGS) $^
 
-# Atomic Kernel
-$(OBJDIR)/02_atomic_kernel: $(OBJDIR)/02_atomic_kernel.o
-	$(NVCC) $(GENCODE_FLAGS) -o $@ $(NVCC_LDFLAGS) $^
-
-# Atomic Kernel with cascade
-$(OBJDIR)/03_atomic_kernel_cascade: $(OBJDIR)/03_atomic_kernel_cascade.o
-	$(NVCC) $(GENCODE_FLAGS) -o $@ $(NVCC_LDFLAGS) $^
-
-# Atomic Kernel without modulo operations and optimized control flow
-$(OBJDIR)/04_atomic_kernel_opt: $(OBJDIR)/04_atomic_kernel_opt.o
-	$(NVCC) $(GENCODE_FLAGS) -o $@ $(NVCC_LDFLAGS) $^
-
-# Atomic Kernel with sequential addressing
-$(OBJDIR)/05_atomic_kernel_seq_addressing: $(OBJDIR)/05_atomic_kernel_seq_addressing.o
-	$(NVCC) $(GENCODE_FLAGS) -o $@ $(NVCC_LDFLAGS) $^
-
-# Atomic Kernel with loop unrolling
-$(OBJDIR)/06_atomic_kernel_loop_unroll: $(OBJDIR)/06_atomic_kernel_loop_unroll.o
-	$(NVCC) $(GENCODE_FLAGS) -o $@ $(NVCC_LDFLAGS) $^
-
-# Atomic Kernel with shuffeling
-$(OBJDIR)/07_atomic_kernel_shuffle: $(OBJDIR)/07_atomic_kernel_shuffle.o
-	$(NVCC) $(GENCODE_FLAGS) -o $@ $(NVCC_LDFLAGS) $^
-
-INPUT_SIZE=$(shell echo  2 ^ 21 | bc)
-NVPROF=nsys profile --stats=true 
-all: $(OBJDIR)/01_seperate_kernels \
+KERNELS = $(OBJDIR)/01_seperate_kernels \
 	 $(OBJDIR)/02_atomic_kernel \
 	 $(OBJDIR)/03_atomic_kernel_cascade \
 	 $(OBJDIR)/04_atomic_kernel_opt \
-	 $(OBJDIR)/05_atomic_kernel_seq_addressing \
+	 $(OBJDIR)/05_atomic_kernel_seq_address \
 	 $(OBJDIR)/06_atomic_kernel_loop_unroll \
 	 $(OBJDIR)/07_atomic_kernel_shuffle
+
+all: $(KERNELS)
+
+INPUT_SIZE=$(shell echo  2 ^ 21 | bc)
+#NVPROF=nsys profile --stats=true --output="./build/report%n"
+run: $(KERNELS)
 	@echo "Expected output: $(INPUT_SIZE)"
-	#$(NVPROF) $(OBJDIR)/01_seperate_kernels $(INPUT_SIZE)
-	#$(NVPROF) $(OBJDIR)/02_atomic_kernel $(INPUT_SIZE)
-	#$(NVPROF) $(OBJDIR)/03_atomic_kernel_cascade $(INPUT_SIZE)
-	#$(NVPROF) $(OBJDIR)/04_atomic_kernel_opt $(INPUT_SIZE)
-	#$(NVPROF) $(OBJDIR)/05_atomic_kernel_seq_addressing $(INPUT_SIZE)
-	$(NVPROF) $(OBJDIR)/06_atomic_kernel_loop_unroll $(INPUT_SIZE)
-	$(NVPROF) $(OBJDIR)/07_atomic_kernel_shuffle $(INPUT_SIZE)
-	rm -rf report*.nsys-rep report*.sqlite
+	for kernel in $(KERNELS); do \
+		echo "Running $$kernel"; \
+		$(NVPROF) $$kernel $(INPUT_SIZE); \
+	done
 
 .PHONY.: clean
 clean:
