@@ -6,17 +6,21 @@ GENCODE_SM50	:= -gencode arch=compute_50,code=sm_50
 GENCODE_SM52	:= -gencode arch=compute_52,code=sm_52
 GENCODE_SM60    := -gencode arch=compute_60,code=sm_60
 GENCODE_SM70    := -gencode arch=compute_70,code=sm_70
+GENCODE_SM72    := -gencode arch=compute_72,code=sm_72
 GENCODE_SM80    := -gencode arch=compute_80,code=sm_80 -gencode arch=compute_80,code=compute_80
-GENCODE_FLAGS	:= $(GENCODE_SM70)
+GENCODE_FLAGS	:= $(GENCODE_SM72)
 
 NVCC_FLAGS += -dc -Xcompiler -fopenmp -lineinfon $(GENCODE_FLAGS) -std=c++14 
 
 NVCC_LDFLAGS = -lcuda -lcudart -Xcompiler -fopenmp
 
-Filter: Makefile reduce.cu
-	$(NVCC) $(NVCC_FLAGS) reduce.cu -c -o reduce.o
-	$(NVCC) $(GENCODE_FLAGS) reduce.o -o reduce $(NVCC_LDFLAGS)
+SRCDIR = ./src
+OUTDIR = ./bin
+
+$(OUTDIR)/reduce: Makefile $(SRCDIR)/reduce.cu
+	$(NVCC) $(NVCC_FLAGS) $(SRCDIR)/reduce.cu -c -o $(OUTDIR)/reduce.o
+	$(NVCC) $(GENCODE_FLAGS) $(OUTDIR)/reduce.o -o $(OUTDIR)/reduce $(NVCC_LDFLAGS)
 
 .PHONY.: clean
 clean:
-	rm -f  reduce.o  reduce
+	rm -f  $(OUTDIR)/*
