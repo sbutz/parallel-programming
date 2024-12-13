@@ -18,6 +18,7 @@ SRCDIR = ./src
 OUTDIR = ./bin
 
 $(OUTDIR)/histogram: Makefile $(SRCDIR)/histogram.cu
+	mkdir -p $(OUTDIR)
 	$(NVCC) $(NVCC_FLAGS) $(SRCDIR)/histogram.cu -c -o $(OUTDIR)/histogram.o
 	$(NVCC) $(GENCODE_FLAGS) $(OUTDIR)/histogram.o -o $(OUTDIR)/histogram $(NVCC_LDFLAGS)
 
