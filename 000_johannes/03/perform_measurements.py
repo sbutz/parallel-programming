@@ -15,7 +15,7 @@ os.mkdir(outDirectory)
 
 idx = 0
 sz = 8
-maxSz = 2 ** 8 # 1 GiB
+maxSz = 2 ** 30 # 1 GiB
 while sz <= maxSz:
     cmd = os.path.join('.', 'bin', 'histogram')
     result = subprocess.run([cmd, '--', f'{sz}'], stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)

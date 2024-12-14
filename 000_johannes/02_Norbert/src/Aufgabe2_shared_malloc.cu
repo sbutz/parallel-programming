@@ -6,7 +6,7 @@
 
 // Thread block size: BLOCK_SIZE * BLOCK_SIZE
 #define BLOCK_SIZE  16
-#define __N__ 8192
+#define __N__ 1026
 
 // In Anlehnung an http://www.techdarting.com/2014/03/matrix-multiplication-in-cuda-using.html
 __global__ void dgemm_gpu_shared(const float* a, const float* b, float* c, const int n) {

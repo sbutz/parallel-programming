@@ -6,7 +6,22 @@
 
 // Thread block size: BLOCK_SIZE * BLOCK_SIZE
 #define BLOCK_SIZE  16
-#define __N__ 1025
+#define __N__ 8192
+
+
+#define CUDA_CHECK(ans)                                                   \
+{ gpuAssert((ans), __FILE__, __LINE__); }
+
+inline void gpuAssert(
+	cudaError_t code, const char *file, int line, bool abort = true
+) {
+	if (code == cudaSuccess) return;
+	fprintf(
+		stderr, "GPUassert: %s %s %d\n",
+		cudaGetErrorString(code), file, line
+	);
+	if (abort) exit(code);
+}
 
 // In Anlehnung an http://www.techdarting.com/2014/03/matrix-multiplication-in-cuda-using.html
 __global__ void dgemm_gpu_shared(const float* a, const float* b, float* c, const int n) {
@@ -77,10 +92,10 @@ int main(int argc, const char** argv) {
 	//TODO  Allokiere Speicher auf dem host und GPU
 	h_a = (float*)malloc(size);
 	h_b = (float*)malloc(size);
-	cudaMallocHost((void**)&h_c, size);
-	cudaMalloc(&d_a, size);
-	cudaMalloc(&d_b, size);
-	cudaMalloc(&d_c, size);
+	CUDA_CHECK(cudaMallocHost((void**)&h_c, size));
+	CUDA_CHECK(cudaMalloc(&d_a, size));
+	CUDA_CHECK(cudaMalloc(&d_b, size));
+	CUDA_CHECK(cudaMalloc(&d_c, size));
 
 	//Initialisierung, parallelisiert mit OpenMP
 	if (h_a && h_b) {
