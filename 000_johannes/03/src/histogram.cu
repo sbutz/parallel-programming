@@ -46,6 +46,7 @@ float RunAndMeasureCuda(Fct f, Args ... args) {
 	return timeInMilliseconds;
 }
 
+
 // Einfacher Histogramm-Kernel
 // Vorgehen analog Bildfilter in Aufgabe 1:
 // Die Anzahl Threads entspricht der Anzahl Zeichen im Input-String;
@@ -88,14 +89,33 @@ __global__ void histogram_kernel_atomic_private(
 		sBins[t] = 0;
 	}
 
-	if (idx >= numElements) return;
-	unsigned char c = input[idx];
-	atomicAdd(&sBins[c % numBins], 1);
+	if (idx < numElements) {
+		unsigned char c = input[idx];
+		atomicAdd(&sBins[c % numBins], 1);
+	}
 	__syncthreads();
 
 	for (unsigned int t = threadIdx.x; t < numBins; t += blockDim.x) {
 		atomicAdd(&bins[t], sBins[t]);
 	}
+}
+
+// Histogramm-Funktion, die den Kernel histogram_kernel_atomic_private verwendet.
+void histogram_atomic_private(
+	unsigned char *input, unsigned int *bins,
+	unsigned int numElements, unsigned int numBins
+) {
+	constexpr size_t nThreadsPerBlock = 256;
+
+	CUDA_CHECK(cudaMemset(bins, 0, numBins * sizeof(unsigned int)));
+
+	dim3 dimGrid((numElements + nThreadsPerBlock - 1) / nThreadsPerBlock, 1, 1);
+	dim3 dimBlock(nThreadsPerBlock, 1, 1);
+	histogram_kernel_atomic_private<<<dimGrid, dimBlock, numBins * sizeof(unsigned int)>>> (
+		input, bins, numElements, numBins
+	);
+	CUDA_CHECK(cudaGetLastError());
+	CUDA_CHECK(cudaDeviceSynchronize());
 }
 
 __global__ void histogram_kernel_atomic_private_stride(
@@ -194,9 +214,13 @@ void jsonPrintFloatAry(float * ary, size_t n) {
 	printf(" ]");
 }
 
-template <typename Fct>
-void runForKernel(Fct f,
-	char const * inputFileName,
+using HistogramFunction = void (
+	unsigned char *input, unsigned int *bins,
+	unsigned int numElements, unsigned int numBins
+);
+
+void runForHistogramFunction(
+	HistogramFunction histogramFn,
 	unsigned char * hostInput, unsigned char * deviceInput, unsigned int sizeInput, unsigned int inputLength,
 	unsigned int * hostBins, unsigned int * deviceBins, unsigned int sizeBins
 ) {
@@ -214,8 +238,7 @@ void runForKernel(Fct f,
 			}
 		);
 		timesExecution[i] = RunAndMeasureCuda(
-			histogram_atomic_private_stride,
-			//histogram_one_thread_per_character,
+			histogramFn,
 			deviceInput, deviceBins, inputLength, NUM_BINS
 		);
 		timesTransferFromDevice[i] = RunAndMeasureCuda(
@@ -229,39 +252,58 @@ void runForKernel(Fct f,
 	checkGpuResults(hostInput, hostBins, inputLength, NUM_BINS);
 
 	// schreibe JSON-Output auf stdout
-	//   ziemlich naiver Code,
-	//   z.B. keine korrekte Behandlung von Double Quotes und Backslashes im Dateinamen
 	printf("{\n");
-		printf("\"fileName\": \"%s\",\n", inputFileName);
-		printf("\"inputLengthInCharacters\": %d,\n", inputLength);
-
 		printf("\"timesTransferToDevice\": "); jsonPrintFloatAry(timesTransferToDevice, nRuns); printf(",\n");
 		printf("\"timesExecution\": "); jsonPrintFloatAry(timesExecution, nRuns); printf(",\n");
-		printf("\"timesTransferFromDevice\": "); jsonPrintFloatAry(timesTransferFromDevice, nRuns); printf(",\n");
+		printf("\"timesTransferFromDevice\": "); jsonPrintFloatAry(timesTransferFromDevice, nRuns); printf("\n");
 	printf("}\n");
 }
 
+void randomFill(unsigned char * ary, size_t nChars) {
+	// simple pseudo-random number generator copy/pasted from here:
+	//   https://en.wikipedia.org/wiki/Lehmer_random_number_generator#Sample_C99_code
+	// Das sind zugegeben sehr schlechte Zufallszahlen, aber wir müssen nur offensichtliche
+	//   sehr kurze Patterns vermeiden.
+	constexpr uint32_t seed = 2236631296; // eine beliegbige zufällige Zahl < 0x7fffffff
+	auto lcg_parkmiller = [state = (uint32_t)seed] () mutable {
+		return state = (uint64_t)state * 48271 % 0x7fffffff;
+	};
+	for (size_t i = 0; i < nChars; ++i) ary[i] = (lcg_parkmiller() >> 16) & 0xff;
+}
+
 int main(int argc, char *argv[]) {
-	// allokiert den Speicher und gibt die Anzahl der gelesenen Werte zurück
-	unsigned char * hostInput = (unsigned char *)malloc(sizeof(unsigned char));
-	const char * inputFileName = "input_data/test.txt";
-	int inputLength = read_file(inputFileName, &hostInput); 
+	unsigned char * hostInput = nullptr;
+	size_t inputLength = 0;
+	char const * inputFileName = nullptr;
+
+	if (argc <= 2) {
+		if (argc <= 1) {
+			inputFileName = "input_data/test.txt";
+		} else {
+			inputFileName = argv[1];
+		}
+		hostInput = (unsigned char *)malloc(sizeof(unsigned char));
+		inputLength = read_file(inputFileName, &hostInput);
+	} else if (
+		argc == 3 && !strcmp(argv[1], "--") &&
+		(inputLength = strtol(argv[2], nullptr, 10)) > 0
+	) {
+		hostInput = (unsigned char *)malloc(inputLength * sizeof(unsigned char));
+		randomFill(hostInput, inputLength);
+	} else {
+		printf("Usage:\nhistogram\nor\nhistogram filename\nor\nhistogram -- number_of_characters\n");
+		exit(1);
+	}
 
 	unsigned int * hostBins = (unsigned int *)malloc(NUM_BINS * sizeof(unsigned int));
 
-	printf("The input length is %d\n ", inputLength);
-	printf("The number of bins is %d\n", NUM_BINS);
-
 	// allokiere GPU-Speicher
-	//cudaError_t err = cudaSuccess;
 	int sizeBins = NUM_BINS * sizeof(unsigned int);
 	unsigned int sizeInput = inputLength * sizeof(unsigned char);
 	unsigned char * deviceInput;
 	unsigned int * deviceBins;
-
 	CUDA_CHECK(cudaMalloc((void **) &deviceInput, sizeInput));
 	CUDA_CHECK(cudaMalloc((void **) &deviceBins, sizeBins));
-
 
 	constexpr size_t nWarmupRuns = 100;
 
@@ -271,25 +313,44 @@ int main(int argc, char *argv[]) {
 		histogram_one_thread_per_character(deviceInput, deviceBins, inputLength, NUM_BINS);
 	}
 
-	printf("[\n\n");
+	// schreibe JSON-Output
+	// ziemlich naiv, z.B. keine korrekte Behandlung von Double Quotes,
+	//   aber hier wohl ausreichend
+	printf("{\n");
 
-	runForKernel(
-		histogram_kernel_atomic_private,
-		inputFileName,
-		hostInput, deviceInput, sizeInput, inputLength,
-		hostBins, deviceBins, sizeBins
-	);
+		if (inputFileName) printf("\"fileName\": \"%s\",\n", inputFileName);
+		printf("\"inputLengthInCharacters\": %lu,\n", inputLength);
 
-	printf(",\n");
+		printf("\"measurements\": {\n");
 
-	runForKernel(
-		histogram_atomic_private_stride,
-		inputFileName,
-		hostInput, deviceInput, sizeInput, inputLength,
-		hostBins, deviceBins, sizeBins
-	);
+			printf("\"%s\": ", "histogram_one_thread_per_character");
+			runForHistogramFunction(
+				histogram_one_thread_per_character,
+				hostInput, deviceInput, sizeInput, inputLength,
+				hostBins, deviceBins, sizeBins
+			);
 
-	printf("]\n");
+			printf(",\n");
+
+			printf("\"%s\": ", "histogram_atomic_private");
+			runForHistogramFunction(
+				histogram_atomic_private,
+				hostInput, deviceInput, sizeInput, inputLength,
+				hostBins, deviceBins, sizeBins
+			);
+
+			printf(",\n");
+
+			printf("\"%s\": ", "histogram_atomic_private_stride");
+			runForHistogramFunction(
+				histogram_atomic_private_stride,
+				hostInput, deviceInput, sizeInput, inputLength,
+				hostBins, deviceBins, sizeBins
+			);
+
+		printf("}\n");
+
+	printf("}\n");
 
 	// gib den GPU-Speicher frei
 	cudaFree(deviceInput);
