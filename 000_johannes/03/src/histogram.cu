@@ -34,7 +34,7 @@ float RunAndMeasureCuda(Fct f, Args ... args) {
 	// Zeitmessung: Start-Zeitpunkt
 	CUDA_CHECK(cudaEventRecord(start));
 
-	(*f)(args ...);
+	f(args ...);
 
 	// Zeitmessung: Stop-Zeitpunkt
 	CUDA_CHECK(cudaEventRecord(stop));
@@ -103,6 +103,8 @@ __global__ void histogram_kernel_atomic_private_stride(
 	unsigned int numElements, unsigned int numBins
 ) {
 	unsigned int idx = blockIdx.x * blockDim.x + threadIdx.x;
+
+	// initialize bins array in shared memory to 0
 	extern __shared__ unsigned int sBins[];
 	for (unsigned int t = threadIdx.x; t < numBins; t += blockDim.x) {
 		sBins[t] = 0;
@@ -110,9 +112,11 @@ __global__ void histogram_kernel_atomic_private_stride(
 	__syncthreads();
 
 	int stride = blockDim.x * gridDim.x;
-	for (int i = idx; i < numElements; i += stride) {
-		unsigned char c = input[idx];
-		atomicAdd(&sBins[c], c < numBins);
+	for (unsigned int base = 0; base < numElements; base += stride) {
+		if (base + idx < numElements) {
+			unsigned char c = input[base + idx];
+			atomicAdd(&sBins[c % numBins], 1);
+		}
 	}
 	__syncthreads();
 
@@ -139,6 +143,32 @@ void histogram_atomic_private_stride(
 	CUDA_CHECK(cudaDeviceSynchronize());
 }
 
+// Histogramm auf der CPU (zum Test, ob das Ergebnis der Kernels korrekt ist)
+void histogramCpu(
+	unsigned char * input, unsigned int * bins,
+	unsigned int numElements, unsigned int numBins
+) {
+	for (size_t i = 0; i < numBins; ++i) bins[i] = 0;
+	for (size_t i = 0; i < numElements; ++i) ++bins[input[i] % numBins];
+}
+
+void checkGpuResults(
+	unsigned char * input, unsigned int * bins,
+	unsigned int numElements, unsigned int numBins
+) {
+	unsigned int * binsCpu = (unsigned int *)malloc(numBins * sizeof(unsigned int));
+	histogramCpu(input, binsCpu, numElements, numBins);
+	for (size_t i = 0; i < numBins; ++i)
+		if (binsCpu[i] != bins[i]) {
+			for (size_t j = 0; j < numBins; ++j) {
+				printf("Character %lu: CPU: %u, GPU: %u\n", j, binsCpu[j], bins[j]);
+			}
+			printf("Gpu result seems to be wrong.\n");
+			exit(1);
+		}
+	free(binsCpu);
+}
+
 void jsonPrintFloatAry(float * ary, size_t n) {
 	printf("[ ");
 	if (n > 0) {
@@ -150,13 +180,14 @@ void jsonPrintFloatAry(float * ary, size_t n) {
 			printf(", ");
 		}
 	}
-	printf(" ]\n");
+	printf(" ]");
 }
 
 int main(int argc, char *argv[]) {
 	// allokiert den Speicher und gibt die Anzahl der gelesenen Werte zurück
 	unsigned char * hostInput = (unsigned char *)malloc(sizeof(unsigned char));
-	int inputLength = read_file("input_data/test.txt", &hostInput); 
+	const char * inputFileName = "input_data/test.txt";
+	int inputLength = read_file(inputFileName, &hostInput); 
 
 	unsigned int * hostBins = (unsigned int *)malloc(NUM_BINS * sizeof(unsigned int));
 
@@ -173,29 +204,41 @@ int main(int argc, char *argv[]) {
 	CUDA_CHECK(cudaMalloc((void **) &deviceInput, sizeInput));
 	CUDA_CHECK(cudaMalloc((void **) &deviceBins, sizeBins));
 
-	// kopiere die Daten auf die GPU
+
+	constexpr size_t nWarmupRuns = 100;
+	constexpr size_t nRuns = 50;
+	float timesTransferToDevice[nRuns] = {};
+	float timesExecution[nRuns] = {};
+	float timesTransferFromDevice[nRuns] = {};
+
+	// mache Warmup-Runs und ignoriere die Ergebnisse
 	CUDA_CHECK(cudaMemcpy(deviceInput, hostInput, sizeInput, cudaMemcpyHostToDevice));
-
-	constexpr size_t nWarmupRuns = 10;
-	constexpr size_t nRuns = 10;
-	float measuredTimes[nRuns] = {};
-
-	// mach Warmup-Runs und ignoriere die Ergebnisse
 	for (size_t i = 0; i < nWarmupRuns; ++i) {
 		histogram_one_thread_per_character(deviceInput, deviceBins, inputLength, NUM_BINS);
 	}
 
-	// führe die zu testende Histogramm-Funktion nRuns mal aus
-	//   und schreibe die gemessenen Zeiten ins Array measuredTimes
+	// führe die zu testende Histogramm-Funktion (inkl. Transfers) nRuns mal aus
+	//   und schreibe die gemessenen Zeiten ins Array timesExecution
 	for (size_t i = 0; i < nRuns; ++i) {
-		measuredTimes[i] = RunAndMeasureCuda(
-			&histogram_atomic_private_stride, //&histogram_one_thread_per_character,
+		timesTransferToDevice[i] = RunAndMeasureCuda(
+			[&] {
+				CUDA_CHECK(cudaMemcpy(deviceInput, hostInput, sizeInput, cudaMemcpyHostToDevice))
+			}
+		);
+		timesExecution[i] = RunAndMeasureCuda(
+			histogram_atomic_private_stride,
+			//histogram_one_thread_per_character,
 			deviceInput, deviceBins, inputLength, NUM_BINS
 		);
+		timesTransferFromDevice[i] = RunAndMeasureCuda(
+			[&] {
+				CUDA_CHECK(cudaMemcpy(hostBins, deviceBins, sizeBins, cudaMemcpyDeviceToHost))
+			}
+		);
 	}
-	
-	// kopiere die Daten zurück auf den HOST
-	cudaMemcpy(hostBins, deviceBins, sizeBins, cudaMemcpyDeviceToHost);
+
+	// prüfe das Ergebnis des letzten Durchlaufs auf Korrektheit
+	checkGpuResults(hostInput, hostBins, inputLength, NUM_BINS);
 
 	for (int i = 0; i < NUM_BINS; i++) {
 		printf("i: %d ,num: %d \n ",i,  hostBins[i]);
@@ -209,7 +252,17 @@ int main(int argc, char *argv[]) {
 	free(hostBins);
 	free(hostInput);
 
-	jsonPrintFloatAry(measuredTimes, nRuns);
 
+	// schreibe JSON-Output auf stdout
+	//   ziemlich naiver Code,
+	//   z.B. keine korrekte Behandlung von Double Quotes und Backslashes im Dateinamen
+	printf("{\n");
+		printf("\"fileName\": \"%s\",\n", inputFileName);
+		printf("\"inputLengthInCharacters\": %d,\n", inputLength);
+
+		printf("\"timesTransferToDevice\": "); jsonPrintFloatAry(timesTransferToDevice, nRuns); printf(",\n");
+		printf("\"timesExecution\": "); jsonPrintFloatAry(timesExecution, nRuns); printf(",\n");
+		printf("\"timesTransferFromDevice\": "); jsonPrintFloatAry(timesTransferFromDevice, nRuns); printf(",\n");
+	printf("}\n");
 	return 0;
 }
