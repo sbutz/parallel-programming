@@ -10,7 +10,7 @@ GENCODE_SM72    := -gencode arch=compute_72,code=sm_72
 GENCODE_SM80    := -gencode arch=compute_80,code=sm_80 -gencode arch=compute_80,code=compute_80
 GENCODE_FLAGS	:= $(GENCODE_SM72)
 
-NVCC_FLAGS += -dc -Xcompiler -fopenmp -lineinfon $(GENCODE_FLAGS) -std=c++14 
+NVCC_FLAGS += -dc -Xcompiler -fopenmp -lineinfon $(GENCODE_FLAGS) -std=c++14
 
 NVCC_LDFLAGS = -lcuda -lcudart -Xcompiler -fopenmp
 

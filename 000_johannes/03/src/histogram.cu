@@ -104,15 +104,26 @@ __global__ void histogram_kernel_atomic_private_stride(
 ) {
 	unsigned int idx = blockIdx.x * blockDim.x + threadIdx.x;
 
-	// initialize bins array in shared memory to 0
+	// initialisiere Array im shared memory mit 0
 	extern __shared__ unsigned int sBins[];
 	for (unsigned int t = threadIdx.x; t < numBins; t += blockDim.x) {
 		sBins[t] = 0;
 	}
 	__syncthreads();
 
-	int stride = blockDim.x * gridDim.x;
-	for (unsigned int base = 0; base < numElements; base += stride) {
+	{
+		// baseLimit ist die kleinste Zeichenposition, ab der ein ab baseLimit beginnender
+		//   Stride genau am letzten Zeichen des Inputs endet oder über den Input hinausragt.
+		//   Im Prinizip wäre das die letzte Iteration der Schlefe. Da allerdings hier durch
+		//   eine if-Abfrage geprüft werden müsste, ob idx noch innerhalb des Inputs liegt,
+		//   spart es etwas Zeit, den letzten Stride separat zu behandeln.
+		int stride = blockDim.x * gridDim.x;
+		unsigned int baseLimit = numElements >= stride ? numElements - stride : 0;
+		unsigned int base = 0;
+		for (; base < baseLimit; base += stride) {
+			unsigned char c = input[base + idx];
+			atomicAdd(&sBins[c % numBins], 1);
+		}
 		if (base + idx < numElements) {
 			unsigned char c = input[base + idx];
 			atomicAdd(&sBins[c % numBins], 1);
@@ -134,7 +145,7 @@ void histogram_atomic_private_stride(
 
 	CUDA_CHECK(cudaMemset(bins, 0, numBins * sizeof(unsigned int)));
 
-	dim3 dimGrid(2048, 1, 1);
+	dim3 dimGrid(1024, 1, 1);
 	dim3 dimBlock(nThreadsPerBlock, 1, 1);
 	histogram_kernel_atomic_private_stride<<<dimGrid, dimBlock, numBins * sizeof(unsigned int)>>> (
 		input, bins, numElements, numBins
@@ -183,39 +194,16 @@ void jsonPrintFloatAry(float * ary, size_t n) {
 	printf(" ]");
 }
 
-int main(int argc, char *argv[]) {
-	// allokiert den Speicher und gibt die Anzahl der gelesenen Werte zurück
-	unsigned char * hostInput = (unsigned char *)malloc(sizeof(unsigned char));
-	const char * inputFileName = "input_data/test.txt";
-	int inputLength = read_file(inputFileName, &hostInput); 
-
-	unsigned int * hostBins = (unsigned int *)malloc(NUM_BINS * sizeof(unsigned int));
-
-	printf("The input length is %d\n ", inputLength);
-	printf("The number of bins is %d\n", NUM_BINS);
-
-	// allokiere GPU-Speicher
-	//cudaError_t err = cudaSuccess;
-	int sizeBins = NUM_BINS * sizeof(unsigned int);
-	unsigned int sizeInput = inputLength * sizeof(unsigned char);
-	unsigned char * deviceInput;
-	unsigned int * deviceBins;
-
-	CUDA_CHECK(cudaMalloc((void **) &deviceInput, sizeInput));
-	CUDA_CHECK(cudaMalloc((void **) &deviceBins, sizeBins));
-
-
-	constexpr size_t nWarmupRuns = 100;
+template <typename Fct>
+void runForKernel(Fct f,
+	char const * inputFileName,
+	unsigned char * hostInput, unsigned char * deviceInput, unsigned int sizeInput, unsigned int inputLength,
+	unsigned int * hostBins, unsigned int * deviceBins, unsigned int sizeBins
+) {
 	constexpr size_t nRuns = 50;
 	float timesTransferToDevice[nRuns] = {};
 	float timesExecution[nRuns] = {};
 	float timesTransferFromDevice[nRuns] = {};
-
-	// mache Warmup-Runs und ignoriere die Ergebnisse
-	CUDA_CHECK(cudaMemcpy(deviceInput, hostInput, sizeInput, cudaMemcpyHostToDevice));
-	for (size_t i = 0; i < nWarmupRuns; ++i) {
-		histogram_one_thread_per_character(deviceInput, deviceBins, inputLength, NUM_BINS);
-	}
 
 	// führe die zu testende Histogramm-Funktion (inkl. Transfers) nRuns mal aus
 	//   und schreibe die gemessenen Zeiten ins Array timesExecution
@@ -240,19 +228,6 @@ int main(int argc, char *argv[]) {
 	// prüfe das Ergebnis des letzten Durchlaufs auf Korrektheit
 	checkGpuResults(hostInput, hostBins, inputLength, NUM_BINS);
 
-	for (int i = 0; i < NUM_BINS; i++) {
-		printf("i: %d ,num: %d \n ",i,  hostBins[i]);
-	}
-
-	// gib den GPU-Speicher frei
-	cudaFree(deviceInput);
-	cudaFree(deviceBins);
-
-	// gib den Host-Speicher frei
-	free(hostBins);
-	free(hostInput);
-
-
 	// schreibe JSON-Output auf stdout
 	//   ziemlich naiver Code,
 	//   z.B. keine korrekte Behandlung von Double Quotes und Backslashes im Dateinamen
@@ -264,5 +239,65 @@ int main(int argc, char *argv[]) {
 		printf("\"timesExecution\": "); jsonPrintFloatAry(timesExecution, nRuns); printf(",\n");
 		printf("\"timesTransferFromDevice\": "); jsonPrintFloatAry(timesTransferFromDevice, nRuns); printf(",\n");
 	printf("}\n");
+}
+
+int main(int argc, char *argv[]) {
+	// allokiert den Speicher und gibt die Anzahl der gelesenen Werte zurück
+	unsigned char * hostInput = (unsigned char *)malloc(sizeof(unsigned char));
+	const char * inputFileName = "input_data/test.txt";
+	int inputLength = read_file(inputFileName, &hostInput); 
+
+	unsigned int * hostBins = (unsigned int *)malloc(NUM_BINS * sizeof(unsigned int));
+
+	printf("The input length is %d\n ", inputLength);
+	printf("The number of bins is %d\n", NUM_BINS);
+
+	// allokiere GPU-Speicher
+	//cudaError_t err = cudaSuccess;
+	int sizeBins = NUM_BINS * sizeof(unsigned int);
+	unsigned int sizeInput = inputLength * sizeof(unsigned char);
+	unsigned char * deviceInput;
+	unsigned int * deviceBins;
+
+	CUDA_CHECK(cudaMalloc((void **) &deviceInput, sizeInput));
+	CUDA_CHECK(cudaMalloc((void **) &deviceBins, sizeBins));
+
+
+	constexpr size_t nWarmupRuns = 100;
+
+	// mache Warmup-Runs und ignoriere die Ergebnisse
+	CUDA_CHECK(cudaMemcpy(deviceInput, hostInput, sizeInput, cudaMemcpyHostToDevice));
+	for (size_t i = 0; i < nWarmupRuns; ++i) {
+		histogram_one_thread_per_character(deviceInput, deviceBins, inputLength, NUM_BINS);
+	}
+
+	printf("[\n\n");
+
+	runForKernel(
+		histogram_kernel_atomic_private,
+		inputFileName,
+		hostInput, deviceInput, sizeInput, inputLength,
+		hostBins, deviceBins, sizeBins
+	);
+
+	printf(",\n");
+
+	runForKernel(
+		histogram_atomic_private_stride,
+		inputFileName,
+		hostInput, deviceInput, sizeInput, inputLength,
+		hostBins, deviceBins, sizeBins
+	);
+
+	printf("]\n");
+
+	// gib den GPU-Speicher frei
+	cudaFree(deviceInput);
+	cudaFree(deviceBins);
+
+	// gib den Host-Speicher frei
+	free(hostBins);
+	free(hostInput);
+
 	return 0;
 }
