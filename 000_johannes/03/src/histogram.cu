@@ -237,7 +237,7 @@ void runForHistogramFunction(
 	unsigned char * hostInput, unsigned char * deviceInput, unsigned int sizeInput, unsigned int inputLength,
 	unsigned int * hostBins, unsigned int * deviceBins, unsigned int sizeBins
 ) {
-	constexpr size_t nRuns = 50;
+	constexpr size_t nRuns = 100;
 	float timesTransferToDevice[nRuns] = {};
 	float timesExecution[nRuns] = {};
 	float timesTransferFromDevice[nRuns] = {};
