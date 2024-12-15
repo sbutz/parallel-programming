@@ -207,7 +207,7 @@ void jsonPrintFloatAry(float * ary, size_t n) {
 	if (n > 0) {
 		size_t i = 0;
 		for (;;) {
-			printf("%.4f", ary[i]);
+			printf("%.7f", ary[i]);
 			++i;
 			if (i == n) break;
 			printf(", ");
