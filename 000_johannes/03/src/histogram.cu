@@ -183,7 +183,8 @@ void histogramCpu(
 	for (size_t i = 0; i < numElements; ++i) ++bins[input[i] % numBins];
 }
 
-void checkGpuResults(
+bool checkGpuResults(
+	char const * descr,
 	unsigned char * input, unsigned int * bins,
 	unsigned int numElements, unsigned int numBins
 ) {
@@ -191,13 +192,14 @@ void checkGpuResults(
 	histogramCpu(input, binsCpu, numElements, numBins);
 	for (size_t i = 0; i < numBins; ++i)
 		if (binsCpu[i] != bins[i]) {
+			printf("Gpu result seems to be wrong for %s.\n", descr);
 			for (size_t j = 0; j < numBins; ++j) {
 				printf("Character %lu: CPU: %u, GPU: %u\n", j, binsCpu[j], bins[j]);
 			}
-			printf("Gpu result seems to be wrong.\n");
-			exit(1);
+			return false;
 		}
 	free(binsCpu);
+	return true;
 }
 
 void jsonPrintFloatAry(float * ary, size_t n) {
@@ -219,8 +221,19 @@ using HistogramFunction = void (
 	unsigned int numElements, unsigned int numBins
 );
 
+void performWarmupRuns(
+	HistogramFunction histogramFn,
+	unsigned char * deviceWarmupInput, unsigned int * deviceBins, size_t warmupInputLength
+) {
+	constexpr size_t nWarmupRuns = 200;
+	for (size_t i = 0; i < nWarmupRuns; ++i) {
+		histogramFn(deviceWarmupInput, deviceBins, warmupInputLength, NUM_BINS);
+	}
+}
+
 void runForHistogramFunction(
 	HistogramFunction histogramFn,
+	unsigned char * deviceWarmupInput, unsigned int lengthWarmupInput,
 	unsigned char * hostInput, unsigned char * deviceInput, unsigned int sizeInput, unsigned int inputLength,
 	unsigned int * hostBins, unsigned int * deviceBins, unsigned int sizeBins
 ) {
@@ -228,6 +241,11 @@ void runForHistogramFunction(
 	float timesTransferToDevice[nRuns] = {};
 	float timesExecution[nRuns] = {};
 	float timesTransferFromDevice[nRuns] = {};
+
+	// mache Warmup-Runs und ignoriere die Ergebnisse
+	//   Wir machen die Warmup-Runs mit allokiertem und uninitialisiertem Speicher,
+	//   aber das ist ok, denn uns sind die Ergebnisse sowieso egal.
+	performWarmupRuns(histogramFn, deviceWarmupInput, deviceBins, lengthWarmupInput);
 
 	// führe die zu testende Histogramm-Funktion (inkl. Transfers) nRuns mal aus
 	//   und schreibe die gemessenen Zeiten ins Array timesExecution
@@ -247,9 +265,6 @@ void runForHistogramFunction(
 			}
 		);
 	}
-
-	// prüfe das Ergebnis des letzten Durchlaufs auf Korrektheit
-	checkGpuResults(hostInput, hostBins, inputLength, NUM_BINS);
 
 	// schreibe JSON-Output auf stdout
 	printf("{\n");
@@ -295,7 +310,15 @@ int main(int argc, char *argv[]) {
 		exit(1);
 	}
 
-	unsigned int * hostBins = (unsigned int *)malloc(NUM_BINS * sizeof(unsigned int));
+	unsigned int * hostBins_one_thread_per_character = (unsigned int *)malloc(NUM_BINS * sizeof(unsigned int));
+	unsigned int * hostBins_atomic_private = (unsigned int *)malloc(NUM_BINS * sizeof(unsigned int));
+	unsigned int * hostBins_atomic_private_stride = (unsigned int *)malloc(NUM_BINS * sizeof(unsigned int));
+
+	// GPU-Speicher für Warmup-Runs
+	constexpr size_t lengthWarmupInput = 1u << 22; // 100 MiB
+	constexpr size_t sizeWarmupInput = lengthWarmupInput * sizeof (unsigned char);
+	unsigned char * deviceWarmupInput;
+	CUDA_CHECK(cudaMalloc((void **) &deviceWarmupInput, sizeWarmupInput))
 
 	// allokiere GPU-Speicher
 	int sizeBins = NUM_BINS * sizeof(unsigned int);
@@ -305,15 +328,7 @@ int main(int argc, char *argv[]) {
 	CUDA_CHECK(cudaMalloc((void **) &deviceInput, sizeInput));
 	CUDA_CHECK(cudaMalloc((void **) &deviceBins, sizeBins));
 
-	constexpr size_t nWarmupRuns = 100;
-
-	// mache Warmup-Runs und ignoriere die Ergebnisse
-	CUDA_CHECK(cudaMemcpy(deviceInput, hostInput, sizeInput, cudaMemcpyHostToDevice));
-	for (size_t i = 0; i < nWarmupRuns; ++i) {
-		histogram_one_thread_per_character(deviceInput, deviceBins, inputLength, NUM_BINS);
-	}
-
-	// schreibe JSON-Output
+	// mache die Messungen und schreibe JSON-Output
 	// ziemlich naiv, z.B. keine korrekte Behandlung von Double Quotes,
 	//   aber hier wohl ausreichend
 	printf("{\n");
@@ -326,8 +341,9 @@ int main(int argc, char *argv[]) {
 			printf("\"%s\": ", "histogram_one_thread_per_character");
 			runForHistogramFunction(
 				histogram_one_thread_per_character,
+				deviceWarmupInput, lengthWarmupInput,
 				hostInput, deviceInput, sizeInput, inputLength,
-				hostBins, deviceBins, sizeBins
+				hostBins_one_thread_per_character, deviceBins, sizeBins
 			);
 
 			printf(",\n");
@@ -335,8 +351,9 @@ int main(int argc, char *argv[]) {
 			printf("\"%s\": ", "histogram_atomic_private");
 			runForHistogramFunction(
 				histogram_atomic_private,
+				deviceWarmupInput, lengthWarmupInput,
 				hostInput, deviceInput, sizeInput, inputLength,
-				hostBins, deviceBins, sizeBins
+				hostBins_atomic_private, deviceBins, sizeBins
 			);
 
 			printf(",\n");
@@ -344,20 +361,34 @@ int main(int argc, char *argv[]) {
 			printf("\"%s\": ", "histogram_atomic_private_stride");
 			runForHistogramFunction(
 				histogram_atomic_private_stride,
+				deviceWarmupInput, lengthWarmupInput,
 				hostInput, deviceInput, sizeInput, inputLength,
-				hostBins, deviceBins, sizeBins
+				hostBins_atomic_private_stride, deviceBins, sizeBins
 			);
 
 		printf("}\n");
 
 	printf("}\n");
 
+
 	// gib den GPU-Speicher frei
-	cudaFree(deviceInput);
 	cudaFree(deviceBins);
+	cudaFree(deviceInput);
+	cudaFree(deviceWarmupInput);
+
+	// prüfe das Ergebnis des jeweils letzten Durchlaufs auf Korrektheit
+	if (!!(
+		checkGpuResults("one_thread_per_character", hostInput, hostBins_one_thread_per_character, inputLength, NUM_BINS) &
+		checkGpuResults("atomic_private", hostInput, hostBins_atomic_private, inputLength, NUM_BINS) &
+		checkGpuResults("atomic_private_stride", hostInput, hostBins_atomic_private_stride, inputLength, NUM_BINS)
+	)) {
+		exit(1);
+	}
 
 	// gib den Host-Speicher frei
-	free(hostBins);
+	free(hostBins_atomic_private_stride);
+	free(hostBins_atomic_private);
+	free(hostBins_one_thread_per_character);
 	free(hostInput);
 
 	return 0;
