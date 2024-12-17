@@ -6,7 +6,7 @@
 
 // Thread block size: BLOCK_SIZE * BLOCK_SIZE
 #define BLOCK_SIZE  16
-#define __N__ 8192
+#define __N__ 129
 
 
 #define CUDA_CHECK(ans)                                                   \
@@ -45,8 +45,10 @@ __global__ void dgemm_gpu_shared(const float* a, const float* b, float* c, const
 		// Load
 		int ph_BLOCK_SIZE = ph * BLOCK_SIZE;
 
-		sA[threadIdx.y][threadIdx.x] = a[Row_n + threadIdx.x + ph_BLOCK_SIZE];
-		sB[threadIdx.y][threadIdx.x] = b[(threadIdx.y + ph_BLOCK_SIZE) * n + Col];
+		int aidx = Row_n + threadIdx.x + ph_BLOCK_SIZE;
+		int bidx = (threadIdx.y + ph_BLOCK_SIZE) * n + Col;
+		sA[threadIdx.y][threadIdx.x] = aidx < n*n ? a[aidx] : 0.0f;
+		sB[threadIdx.y][threadIdx.x] = bidx < n*n ? b[bidx] : 0.0f;
 		__syncthreads();
 
 		// Calc
@@ -133,11 +135,14 @@ int main(int argc, const char** argv) {
 		for (col = 0; col < n; ++col) {
 
 			absError = fabs(h_c[row * n + col] - h_b[row * n + col]);
+			printf("%.2f", h_c[row * n + col]);
+			if (col != n-1) printf(", ");
 			sumAbsError += absError;
 
 			if (absError > maxAbsError)
 				maxAbsError = absError;
 		}
+		printf("\n");
 	}
 	cudaEventElapsedTime(&time, start, stop);
 
