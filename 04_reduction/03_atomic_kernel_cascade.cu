@@ -5,7 +5,6 @@
 
 static constexpr std::size_t N_ITERATIONS = 1024;
 static constexpr std::size_t N_THREADS = 1024;
-static constexpr std::size_t N_CASCADE = 32;
 
 __global__ void Init(float *in, std::size_t size) {
     std::size_t i = blockIdx.x * blockDim.x + threadIdx.x;
@@ -42,7 +41,7 @@ __global__ void Sum(float *in, float *out, std::size_t size) {
         atomicAdd(out, sdata[0]);
 }
 
-void Reduce(std::size_t input_size) {
+void Reduce(std::size_t input_size, std::size_t cascade_size) {
     float *input;
     CUDA_ASSERT(cudaMalloc((void **)&input, input_size * sizeof(float)));
 
@@ -51,7 +50,7 @@ void Reduce(std::size_t input_size) {
     CUDA_ASSERT(cudaMalloc((void **)&output, output_size * sizeof(float)));
 
     dim3 blockSize(N_THREADS, 1, 1);
-    dim3 gridSize((input_size / N_CASCADE + blockSize.x - 1) / blockSize.x, 1, 1);
+    dim3 gridSize((input_size / cascade_size + blockSize.x - 1) / blockSize.x, 1, 1);
 
     // Initialize Vector
     Init<<<gridSize, blockSize>>>(input, input_size);
@@ -75,16 +74,22 @@ void Reduce(std::size_t input_size) {
 }
 
 int main(int argc, char *argv[]) {
-    if (argc != 2) {
-        std::cerr << "Usage: " << argv[0] << " input_size" << std::endl;
+    if (argc < 2 || argc > 3) {
+        std::cerr << "Usage: " << argv[0] << " input_size cascade_size" << std::endl;
         return 1;
     }
 
     cudaInit();
 
     std::size_t input_size = std::atoi(argv[1]);
+
+    std::size_t cascade_size = 32;
+    if (argc == 3) {
+        cascade_size = std::atoi(argv[2]);
+    }
+
     for (auto i = 0; i < N_ITERATIONS; i++) {
-        Reduce(input_size);
+        Reduce(input_size, cascade_size);
     }
 
     return 0;
