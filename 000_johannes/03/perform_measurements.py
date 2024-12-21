@@ -14,11 +14,11 @@ outDirectory = os.path.join(jsonDirectory, timestamp)
 os.mkdir(outDirectory)
 
 idx = 0
-sz = 2 ** 33
-maxSz = 2 ** 33 # 2 GiB
+sz = 8
+maxSz = 2 ** 16 # 2 GiB
 while sz <= maxSz:
     args = "s"
-    if sz <= 31:
+    if sz <= 2 ** 31:
         args += "oa"
 
     cmd = os.path.join('.', 'bin', 'histogram')
