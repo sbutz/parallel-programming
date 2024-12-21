@@ -53,7 +53,7 @@ float RunAndMeasureCuda(Fct f, Args ... args) {
 //   jeder Thread erhöht atomar den Bin für "sein" Zeichen um 1.
 __global__ void histogram_kernel_one_thread_per_character(
 	unsigned char *input, unsigned int *bins,
-	unsigned int numElements, unsigned int numBins
+	size_t numElements, size_t numBins
 ) {
 	unsigned int idx = blockIdx.x * blockDim.x + threadIdx.x;
 	if (idx >= numElements) return;
@@ -64,7 +64,7 @@ __global__ void histogram_kernel_one_thread_per_character(
 // Histogramm-Funktion, die den Kernel histogram_kernel_one_thread_per_character verwendet.
 void histogram_one_thread_per_character(
 	unsigned char *input, unsigned int *bins,
-	unsigned int numElements, unsigned int numBins
+	size_t numElements, size_t numBins
 ) {
 	constexpr size_t nThreadsPerBlock = 128;
 
@@ -81,7 +81,7 @@ void histogram_one_thread_per_character(
 
 __global__ void histogram_kernel_atomic_private(
 	unsigned char *input, unsigned int *bins,
-	unsigned int numElements, unsigned int numBins
+	size_t numElements, size_t numBins
 ) {
 	unsigned int idx = blockIdx.x * blockDim.x + threadIdx.x;
 	extern __shared__ unsigned int sBins[];
@@ -103,7 +103,7 @@ __global__ void histogram_kernel_atomic_private(
 // Histogramm-Funktion, die den Kernel histogram_kernel_atomic_private verwendet.
 void histogram_atomic_private(
 	unsigned char *input, unsigned int *bins,
-	unsigned int numElements, unsigned int numBins
+	size_t numElements, size_t numBins
 ) {
 	constexpr size_t nThreadsPerBlock = 256;
 
@@ -120,7 +120,7 @@ void histogram_atomic_private(
 
 __global__ void histogram_kernel_atomic_private_stride(
 	unsigned char *input, unsigned int *bins,
-	unsigned int numElements, unsigned int numBins
+	size_t numElements, size_t numBins
 ) {
 	unsigned int idx = blockIdx.x * blockDim.x + threadIdx.x;
 
@@ -138,8 +138,8 @@ __global__ void histogram_kernel_atomic_private_stride(
 		//   eine if-Abfrage geprüft werden müsste, ob idx noch innerhalb des Inputs liegt,
 		//   spart es etwas Zeit, den letzten Stride separat zu behandeln.
 		int stride = blockDim.x * gridDim.x;
-		unsigned int baseLimit = numElements >= stride ? numElements - stride : 0;
-		unsigned int base = 0;
+		size_t baseLimit = numElements >= stride ? numElements - stride : 0;
+		size_t base = 0;
 		for (; base < baseLimit; base += stride) {
 			unsigned char c = input[base + idx];
 			atomicAdd(&sBins[c % numBins], 1);
@@ -159,7 +159,7 @@ __global__ void histogram_kernel_atomic_private_stride(
 // Histogramm-Funktion, die den Kernel histogram_kernel_atomic_private_stride verwendet.
 void histogram_atomic_private_stride(
 	unsigned char *input, unsigned int *bins,
-	unsigned int numElements, unsigned int numBins
+	size_t numElements, size_t numBins
 ) {
 	constexpr size_t nThreadsPerBlock = 256;
 
@@ -177,7 +177,7 @@ void histogram_atomic_private_stride(
 // Histogramm auf der CPU (zum Test, ob das Ergebnis der Kernels korrekt ist)
 void histogramCpu(
 	unsigned char * input, unsigned int * bins,
-	unsigned int numElements, unsigned int numBins
+	size_t numElements, size_t numBins
 ) {
 	for (size_t i = 0; i < numBins; ++i) bins[i] = 0;
 	for (size_t i = 0; i < numElements; ++i) ++bins[input[i] % numBins];
@@ -186,7 +186,7 @@ void histogramCpu(
 bool checkGpuResults(
 	char const * descr,
 	unsigned char * input, unsigned int * bins,
-	unsigned int numElements, unsigned int numBins
+	size_t numElements, size_t numBins
 ) {
 	unsigned int * binsCpu = (unsigned int *)malloc(numBins * sizeof(unsigned int));
 	histogramCpu(input, binsCpu, numElements, numBins);
@@ -233,7 +233,7 @@ void jsonPrintUnsignedIntAry(unsigned int * ary, size_t n) {
 
 using HistogramFunction = void (
 	unsigned char *input, unsigned int *bins,
-	unsigned int numElements, unsigned int numBins
+	size_t numElements, size_t numBins
 );
 
 void performWarmupRuns(
@@ -248,9 +248,9 @@ void performWarmupRuns(
 
 void runForHistogramFunction(
 	HistogramFunction histogramFn,
-	unsigned char * deviceWarmupInput, unsigned int lengthWarmupInput,
-	unsigned char * hostInput, unsigned char * deviceInput, unsigned int sizeInput, unsigned int inputLength,
-	unsigned int * hostBins, unsigned int * deviceBins, unsigned int sizeBins
+	unsigned char * deviceWarmupInput, size_t lengthWarmupInput,
+	unsigned char * hostInput, unsigned char * deviceInput, size_t sizeInput, size_t inputLength,
+	unsigned int * hostBins, unsigned int * deviceBins, size_t sizeBins
 ) {
 	constexpr size_t nRuns = 100;
 	float timesTransferToDevice[nRuns] = {};
@@ -385,6 +385,10 @@ int main(int argc, char *argv[]) {
 		inputLength = cla.inputLength;
 		uniformInput = cla.uniformInput;
 		hostInput = (unsigned char *)malloc(inputLength * sizeof(unsigned char));
+		if (!hostInput) {
+			fprintf(stderr, "Host memory allocation failed");
+			exit(1);
+		}
 		if (uniformInput) {
 			for (size_t j = 0; j < inputLength; ++j) hostInput[j] = 'a';
 		} else {
@@ -404,12 +408,17 @@ int main(int argc, char *argv[]) {
 	CUDA_CHECK(cudaMalloc((void **) &deviceWarmupInput, sizeWarmupInput))
 
 	// allokiere GPU-Speicher
-	int sizeBins = NUM_BINS * sizeof(unsigned int);
-	unsigned int sizeInput = inputLength * sizeof(unsigned char);
+	size_t sizeBins = NUM_BINS * sizeof(unsigned int);
+	size_t sizeInput = inputLength * sizeof(unsigned char);
 	unsigned char * deviceInput;
 	unsigned int * deviceBins;
 	CUDA_CHECK(cudaMalloc((void **) &deviceInput, sizeInput));
 	CUDA_CHECK(cudaMalloc((void **) &deviceBins, sizeBins));
+
+  if (!deviceInput || !deviceBins) {
+		fprintf(stderr, "Device memory allocation failed");
+		exit(1);
+	}
 
 	// mache die Messungen und schreibe JSON-Output
 	// ziemlich naiv, z.B. keine korrekte Behandlung von Double Quotes,
