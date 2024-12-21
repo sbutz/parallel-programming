@@ -192,11 +192,69 @@ def reduction():
     ]
     kernel_name = "Sum"
 
+    # Profile kernels
+    d = []
+    for image in images:
+        for margin in [1, 2, 3]:
+            with tempfile.NamedTemporaryFile() as tmpfile:
+                report = NvProfReport(binary, [str(margin), image, tmpfile.name])
+                d.append(
+                    {
+                        "image": os.path.basename(image),
+                        "margin": margin,
+                        "exec_time": report.get_kernel_execution_time(kernel_name),
+                        "launch_time": report.get_kernel_launch_time(),
+                        "memcpy_to_device_time": report.get_memcpy_to_device_time(),
+                        "memcpy_to_host_time": report.get_memcpy_to_host_time(),
+                    },
+                )
+    df = pd.DataFrame(d)
+    df.to_csv(os.path.join(plot_dir, "04_reduction", "kernel_execution_times.csv"))
+
+    # Plot execution times
+    fig = (
+        df.pivot(index="image", columns="margin", values="exec_time")
+        .plot(kind="bar")
+        .get_figure()
+    )
+    fig.gca().set_title("Kernel execution times")
+    fig.gca().set_ylabel("Time [us]")
+    fig.gca().set_yscale("log", base=2)
+    fig.gca().set_xticklabels(fig.gca().get_xticklabels(), rotation=0)
+    fig.gca().yaxis.set_major_formatter(ticker.FormatStrFormatter("%d"))
+    plot_path = os.path.join(plot_dir, "01_image_filter", "kernel_execution_times.png")
+    os.makedirs(os.path.dirname(plot_path), exist_ok=True)
+    fig.savefig(plot_path)
+
+    # Plot memcpy times
+    fig = (
+        df[df["margin"] == 1]
+        .set_index("image")[
+            [
+                "launch_time",
+                "exec_time",
+                "memcpy_to_device_time",
+                "memcpy_to_host_time",
+            ]
+        ]
+        .plot(kind="bar", stacked=True)
+        .get_figure()
+    )
+    fig.gca().set_title("Execution time composition")
+    fig.gca().set_ylabel("Time [us]")
+    fig.gca().set_xticklabels(fig.gca().get_xticklabels(), rotation=0)
+    fig.gca().yaxis.set_major_formatter(ticker.FormatStrFormatter("%d"))
+    plot_path = os.path.join(
+        plot_dir, "01_image_filter", "execution_time_composition.png"
+    )
+    os.makedirs(os.path.dirname(plot_path), exist_ok=True)
+    fig.savefig(plot_path)
+
     # Compare Cascade
     d = []
     binary = binaries[2]
     iter = 1
-    for n in range(16, 22):
+    for n in range(12, 24):
         problem_size = 2**n
         for c in range(1, 11):
             cascade_size = 2**c
