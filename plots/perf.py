@@ -192,53 +192,40 @@ def reduction():
     ]
     kernel_name = "Sum"
 
-    # Profile kernels
+    # Compare Cascade
     d = []
-    for binary in binaries:
-        for n in range(16, 22):
-            problem_size = 2**n
-            report = NvProfReport(binary, [str(problem_size)])
-
-            # Reduction using seperate kernels runs in multiple iterations
-            if os.path.basename(binary) == "01_seperate_kernels":
-                iter = math.ceil(math.log(problem_size, 1024))
-            else:
-                iter = 1
-
+    binary = binaries[2]
+    iter = 1
+    for n in range(16, 22):
+        problem_size = 2**n
+        for c in range(1, 11):
+            cascade_size = 2**c
+            report = NvProfReport(binary, [str(problem_size), str(cascade_size)])
             d.append(
                 {
                     "binary": os.path.basename(binary),
                     "n": problem_size,
+                    "c": cascade_size,
                     "exec_time": report.get_kernel_execution_time(kernel_name) * iter,
                     "launch_time": report.get_kernel_launch_time() * iter,
                 }
             )
     df = pd.DataFrame(d)
+    df.to_csv(
+        os.path.join(plot_dir, "04_reduction", "kernel_cascade_execution_times.csv")
+    )
 
-    # Plot kernel execution times
-    fig = df.pivot(index="n", columns="binary", values="exec_time").plot().get_figure()
+    # Plot kernel cascade execution times
+    fig = df.pivot(index="n", columns="c", values="exec_time").plot().get_figure()
     fig.gca().set_title("Kernel execution times")
     fig.gca().set_ylabel("Time [us]")
     fig.gca().set_yscale("log", base=2)
     fig.gca().yaxis.set_major_formatter(ticker.FormatStrFormatter("%d"))
     fig.gca().set_xlabel("Problem Size")
     fig.gca().set_xscale("log", base=2)
-    plot_path = os.path.join(plot_dir, "04_reduction", "kernel_execution_time.png")
-    os.makedirs(os.path.dirname(plot_path), exist_ok=True)
-    fig.savefig(plot_path)
-
-    # Plot execution time composition
-    fig = (
-        df[df["n"] == 2**21]
-        .set_index("binary")[["launch_time", "exec_time"]]
-        .plot(kind="bar", stacked=True, figsize=(20, 5))
-        .get_figure()
+    plot_path = os.path.join(
+        plot_dir, "04_reduction", "kernel_cascade_execution_time.png"
     )
-    fig.gca().set_title("Execution time composition")
-    fig.gca().set_ylabel("Time [us]")
-    fig.gca().set_xticklabels(fig.gca().get_xticklabels(), rotation=0)
-    fig.gca().yaxis.set_major_formatter(ticker.FormatStrFormatter("%d"))
-    plot_path = os.path.join(plot_dir, "04_reduction", "execution_time_composition.png")
     os.makedirs(os.path.dirname(plot_path), exist_ok=True)
     fig.savefig(plot_path)
 
