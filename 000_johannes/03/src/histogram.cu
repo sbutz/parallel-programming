@@ -216,6 +216,21 @@ void jsonPrintFloatAry(float * ary, size_t n) {
 	printf(" ]");
 }
 
+void jsonPrintUnsignedIntAry(unsigned int * ary, size_t n) {
+	printf("[ ");
+	if (n > 0) {
+		size_t i = 0;
+		for (;;) {
+			printf("%u", ary[i]);
+			++i;
+			if (i == n) break;
+			printf(", ");
+		}
+	}
+	printf(" ]");
+}
+
+
 using HistogramFunction = void (
 	unsigned char *input, unsigned int *bins,
 	unsigned int numElements, unsigned int numBins
@@ -270,7 +285,8 @@ void runForHistogramFunction(
 	printf("{\n");
 		printf("\"timesTransferToDevice\": "); jsonPrintFloatAry(timesTransferToDevice, nRuns); printf(",\n");
 		printf("\"timesExecution\": "); jsonPrintFloatAry(timesExecution, nRuns); printf(",\n");
-		printf("\"timesTransferFromDevice\": "); jsonPrintFloatAry(timesTransferFromDevice, nRuns); printf("\n");
+		printf("\"timesTransferFromDevice\": "); jsonPrintFloatAry(timesTransferFromDevice, nRuns); printf(",\n");
+		printf("\"bins\": "); jsonPrintUnsignedIntAry(hostBins, NUM_BINS); printf("\n");
 	printf("}\n");
 }
 
