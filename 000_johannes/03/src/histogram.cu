@@ -286,29 +286,96 @@ void randomFill(unsigned char * ary, size_t nChars) {
 	for (size_t i = 0; i < nChars; ++i) ary[i] = (lcg_parkmiller() >> 16) & 0xff;
 }
 
+constexpr unsigned int ONE_THREAD_PER_CHARACTER = 1;
+constexpr unsigned int ATOMIC_PRIVATE = 2;
+constexpr unsigned int ATOMIC_PRIVATE_STRIDE = 4;
+
+struct CommandLineArguments {
+	unsigned int kernelsToRun = 0;
+	char const * inputFileName = nullptr;
+	size_t inputLength = 0;
+	bool uniformInput = false;
+};
+
+CommandLineArguments parseCommandLineArguments(int argc, char * argv []) {
+	CommandLineArguments cla = {
+		.kernelsToRun = ONE_THREAD_PER_CHARACTER |
+			ATOMIC_PRIVATE |
+			ATOMIC_PRIVATE_STRIDE,
+		.inputFileName = "input_data/test.txt"
+	};
+
+	do {
+		if (argc <= 1) {
+			// use defaults
+			break;
+		}
+
+		int idx = 1;
+		if (strcmp(argv[1], "--")) {
+			cla.inputFileName = argv[1];
+			++idx;
+		} else {
+			cla.inputFileName = nullptr;
+			if (argc < 3) goto exitFailUsage;
+			// read input length
+			cla.inputLength = strtol(argv[2], nullptr, 10);
+			idx += 2;
+		}
+
+		if (argc == idx) break;
+
+		char const * argstr = argv[idx];
+		cla.kernelsToRun = 0;
+		for (size_t j = 0; argstr[j]; ++j) {
+			switch (argstr[j]) {
+				case 'o': {
+					cla.kernelsToRun |= ONE_THREAD_PER_CHARACTER;
+				} break;
+				case 'a': {
+					cla.kernelsToRun |= ATOMIC_PRIVATE;
+				} break;
+				case 's': {
+					cla.kernelsToRun |= ATOMIC_PRIVATE_STRIDE;
+				} break;
+				case 'u': {
+					cla.uniformInput = true;
+				} break;
+			}
+		}
+	} while (false);
+
+	return cla;
+
+exitFailUsage:
+		printf("Usage:\nhistogram\nor\nhistogram filename\nor\nhistogram -- number_of_characters\n");
+		exit(1);
+}
+
 int main(int argc, char *argv[]) {
 	unsigned char * hostInput = nullptr;
 	size_t inputLength = 0;
 	char const * inputFileName = nullptr;
+	bool uniformInput = false;
+	unsigned int kernelsToRun = 0;
 
-	if (argc <= 2) {
-		if (argc <= 1) {
-			inputFileName = "input_data/test.txt";
-		} else {
-			inputFileName = argv[1];
-		}
+	CommandLineArguments cla = parseCommandLineArguments(argc, argv);
+
+	if (!!cla.inputFileName) {
+		inputFileName = cla.inputFileName;
 		hostInput = (unsigned char *)malloc(sizeof(unsigned char));
 		inputLength = read_file(inputFileName, &hostInput);
-	} else if (
-		argc == 3 && !strcmp(argv[1], "--") &&
-		(inputLength = strtol(argv[2], nullptr, 10)) > 0
-	) {
-		hostInput = (unsigned char *)malloc(inputLength * sizeof(unsigned char));
-		randomFill(hostInput, inputLength);
 	} else {
-		printf("Usage:\nhistogram\nor\nhistogram filename\nor\nhistogram -- number_of_characters\n");
-		exit(1);
+		inputLength = cla.inputLength;
+		uniformInput = cla.uniformInput;
+		hostInput = (unsigned char *)malloc(inputLength * sizeof(unsigned char));
+		if (uniformInput) {
+			for (size_t j = 0; j < inputLength; ++j) hostInput[j] = 'a';
+		} else {
+			randomFill(hostInput, inputLength);
+		}
 	}
+	kernelsToRun = cla.kernelsToRun;
 
 	unsigned int * hostBins_one_thread_per_character = (unsigned int *)malloc(NUM_BINS * sizeof(unsigned int));
 	unsigned int * hostBins_atomic_private = (unsigned int *)malloc(NUM_BINS * sizeof(unsigned int));
@@ -335,36 +402,46 @@ int main(int argc, char *argv[]) {
 
 		if (inputFileName) printf("\"fileName\": \"%s\",\n", inputFileName);
 		printf("\"inputLengthInCharacters\": %lu,\n", inputLength);
+		printf("\"uniformInput\": %s,\n", uniformInput ? "true" : "false");
 
 		printf("\"measurements\": {\n");
+		bool first = true;
 
-			printf("\"%s\": ", "histogram_one_thread_per_character");
-			runForHistogramFunction(
-				histogram_one_thread_per_character,
-				deviceWarmupInput, lengthWarmupInput,
-				hostInput, deviceInput, sizeInput, inputLength,
-				hostBins_one_thread_per_character, deviceBins, sizeBins
-			);
+			if (kernelsToRun & ONE_THREAD_PER_CHARACTER) {
+				if (!first) printf(",\n");
+				printf("\"%s\": ", "histogram_one_thread_per_character");
+				runForHistogramFunction(
+					histogram_one_thread_per_character,
+					deviceWarmupInput, lengthWarmupInput,
+					hostInput, deviceInput, sizeInput, inputLength,
+					hostBins_one_thread_per_character, deviceBins, sizeBins
+				);
+				first = false;
+			}
 
-			printf(",\n");
+			if (kernelsToRun & ATOMIC_PRIVATE) {
+				if (!first) printf(",\n");
+				printf("\"%s\": ", "histogram_atomic_private");
+				runForHistogramFunction(
+					histogram_atomic_private,
+					deviceWarmupInput, lengthWarmupInput,
+					hostInput, deviceInput, sizeInput, inputLength,
+					hostBins_atomic_private, deviceBins, sizeBins
+				);
+				first = false;
+			}
 
-			printf("\"%s\": ", "histogram_atomic_private");
-			runForHistogramFunction(
-				histogram_atomic_private,
-				deviceWarmupInput, lengthWarmupInput,
-				hostInput, deviceInput, sizeInput, inputLength,
-				hostBins_atomic_private, deviceBins, sizeBins
-			);
-
-			printf(",\n");
-
-			printf("\"%s\": ", "histogram_atomic_private_stride");
-			runForHistogramFunction(
-				histogram_atomic_private_stride,
-				deviceWarmupInput, lengthWarmupInput,
-				hostInput, deviceInput, sizeInput, inputLength,
-				hostBins_atomic_private_stride, deviceBins, sizeBins
-			);
+			if (kernelsToRun & ATOMIC_PRIVATE_STRIDE) {
+				if (!first) printf(",\n");
+				printf("\"%s\": ", "histogram_atomic_private_stride");
+				runForHistogramFunction(
+					histogram_atomic_private_stride,
+					deviceWarmupInput, lengthWarmupInput,
+					hostInput, deviceInput, sizeInput, inputLength,
+					hostBins_atomic_private_stride, deviceBins, sizeBins
+				);
+				first = false;
+			}
 
 		printf("}\n");
 
@@ -377,10 +454,17 @@ int main(int argc, char *argv[]) {
 	cudaFree(deviceWarmupInput);
 
 	// prüfe das Ergebnis des jeweils letzten Durchlaufs auf Korrektheit
-	if (!!(
-		checkGpuResults("one_thread_per_character", hostInput, hostBins_one_thread_per_character, inputLength, NUM_BINS) &
-		checkGpuResults("atomic_private", hostInput, hostBins_atomic_private, inputLength, NUM_BINS) &
-		checkGpuResults("atomic_private_stride", hostInput, hostBins_atomic_private_stride, inputLength, NUM_BINS)
+	if (!(
+		(
+			(kernelsToRun & ONE_THREAD_PER_CHARACTER) == 0 ||
+			checkGpuResults("one_thread_per_character", hostInput, hostBins_one_thread_per_character, inputLength, NUM_BINS)
+		) & (
+			(kernelsToRun & ATOMIC_PRIVATE) == 0 ||
+			checkGpuResults("atomic_private", hostInput, hostBins_atomic_private, inputLength, NUM_BINS)
+		) & (
+			(kernelsToRun & ATOMIC_PRIVATE_STRIDE) == 0 ||
+			checkGpuResults("atomic_private_stride", hostInput, hostBins_atomic_private_stride, inputLength, NUM_BINS)
+		)
 	)) {
 		exit(1);
 	}

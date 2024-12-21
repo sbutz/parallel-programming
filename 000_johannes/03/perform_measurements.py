@@ -14,11 +14,18 @@ outDirectory = os.path.join(jsonDirectory, timestamp)
 os.mkdir(outDirectory)
 
 idx = 0
-sz = 8
-maxSz = 2 ** 31 # 2 GiB
+sz = 2 ** 33
+maxSz = 2 ** 33 # 2 GiB
 while sz <= maxSz:
+    args = "s"
+    if sz <= 31:
+        args += "oa"
+
     cmd = os.path.join('.', 'bin', 'histogram')
-    result = subprocess.run([cmd, '--', f'{sz}'], stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True)
+    result = subprocess.run(
+        [cmd, '--', f'{sz}', args],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True
+    )
     with open(os.path.join(outDirectory, f'{timestamp}-{idx:03.0f}.json'), 'w') as file:
         file.write(result.stdout)
     idx += 1
