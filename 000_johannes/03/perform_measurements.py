@@ -3,8 +3,8 @@ import os
 from datetime import datetime
 import subprocess
 
-MIN_SZ = 2 ** 3
-MAX_SZ = 2 ** 4 # 2 ** 32 # 4 GiB
+MIN_SZ = 2 ** 20
+MAX_SZ = 2 ** 20 # 2 ** 32 # 4 GiB
 N_RUNS = 100
 
 jsonDirectory = os.path.join('.', 'measurements')

@@ -46,25 +46,28 @@ float RunAndMeasureCuda(Fct f, Args ... args) {
 	return timeInMilliseconds;
 }
 
-
 // Einfacher Histogramm-Kernel
 // Vorgehen analog Bildfilter in Aufgabe 1:
 // Die Anzahl Threads entspricht der Anzahl Zeichen im Input-String;
 //   jeder Thread erhöht atomar den Bin für "sein" Zeichen um 1.
+template<typename M>
 __global__ void histogram_kernel_one_thread_per_character(
 	unsigned char *input, unsigned int *bins,
-	size_t numElements, size_t numBins
+	size_t numElements, size_t numBins,
+	M mapping
 ) {
 	unsigned int idx = blockIdx.x * blockDim.x + threadIdx.x;
 	if (idx >= numElements) return;
 	unsigned char c = input[idx];
-	atomicAdd(&bins[c % numBins], 1);
+	atomicAdd(&bins[mapping(c)], 1);
 }
 
 // Histogramm-Funktion, die den Kernel histogram_kernel_one_thread_per_character verwendet.
+template <typename M = void>
 void histogram_one_thread_per_character(
 	unsigned char *input, unsigned int *bins,
-	size_t numElements, size_t numBins
+	size_t numElements, size_t numBins,
+  M mapping = [] __device__ (unsigned char c) { return c % 128; }	
 ) {
 	constexpr size_t nThreadsPerBlock = 128;
 
@@ -73,7 +76,9 @@ void histogram_one_thread_per_character(
 	dim3 dimGrid((numElements + nThreadsPerBlock - 1) / nThreadsPerBlock, 1, 1);
 	dim3 dimBlock(nThreadsPerBlock, 1, 1);
 
-	histogram_kernel_one_thread_per_character<<<dimGrid, dimBlock>>> (input, bins, numElements, numBins);
+	histogram_kernel_one_thread_per_character<<<dimGrid, dimBlock>>> (
+		input, bins, numElements, numBins, mapping
+	);
 	
 	CUDA_CHECK(cudaGetLastError());
 	CUDA_CHECK(cudaDeviceSynchronize());
@@ -88,6 +93,7 @@ __global__ void histogram_kernel_atomic_private(
 	for (unsigned int t = threadIdx.x; t < numBins; t += blockDim.x) {
 		sBins[t] = 0;
 	}
+	__syncthreads();
 
 	if (idx < numElements) {
 		unsigned char c = input[idx];
@@ -448,7 +454,12 @@ int main(int argc, char *argv[]) {
 				if (!first) printf(",\n");
 				printf("\"%s\": ", "histogram_one_thread_per_character");
 				runForHistogramFunction(
-					histogram_one_thread_per_character, nRuns,
+					[] (unsigned char * deviceInput, unsigned int * deviceBins, size_t inputLength, size_t nBins) {
+						return histogram_one_thread_per_character(
+							deviceInput, deviceBins, inputLength, nBins,
+							[] __device__ (unsigned char c) -> unsigned char { return c % 128; }	
+						);
+					}, nRuns,
 					deviceWarmupInput, lengthWarmupInput,
 					hostInput, deviceInput, sizeInput, inputLength,
 					hostBins_one_thread_per_character, deviceBins, sizeBins
