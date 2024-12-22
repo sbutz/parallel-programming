@@ -247,15 +247,14 @@ void performWarmupRuns(
 }
 
 void runForHistogramFunction(
-	HistogramFunction histogramFn,
+	HistogramFunction histogramFn, int nRuns,
 	unsigned char * deviceWarmupInput, size_t lengthWarmupInput,
 	unsigned char * hostInput, unsigned char * deviceInput, size_t sizeInput, size_t inputLength,
 	unsigned int * hostBins, unsigned int * deviceBins, size_t sizeBins
 ) {
-	constexpr size_t nRuns = 100;
-	float timesTransferToDevice[nRuns] = {};
-	float timesExecution[nRuns] = {};
-	float timesTransferFromDevice[nRuns] = {};
+	float * timesTransferToDevice = (float *)malloc(nRuns * sizeof(float));
+	float * timesExecution = (float *)malloc(nRuns * sizeof(float));
+	float * timesTransferFromDevice = (float *)malloc(nRuns * sizeof(float));
 
 	// mache Warmup-Runs und ignoriere die Ergebnisse
 	//   Wir machen die Warmup-Runs mit allokiertem und uninitialisiertem Speicher,
@@ -288,6 +287,10 @@ void runForHistogramFunction(
 		printf("\"timesTransferFromDevice\": "); jsonPrintFloatAry(timesTransferFromDevice, nRuns); printf(",\n");
 		printf("\"bins\": "); jsonPrintUnsignedIntAry(hostBins, NUM_BINS); printf("\n");
 	printf("}\n");
+
+	free(timesTransferFromDevice);
+	free(timesExecution);
+	free(timesTransferToDevice);
 }
 
 void randomFill(unsigned char * ary, size_t nChars) {
@@ -310,6 +313,7 @@ struct CommandLineArguments {
 	unsigned int kernelsToRun = 0;
 	char const * inputFileName = nullptr;
 	size_t inputLength = 0;
+	int nRuns = 1;
 	bool uniformInput = false;
 };
 
@@ -359,6 +363,12 @@ CommandLineArguments parseCommandLineArguments(int argc, char * argv []) {
 				} break;
 			}
 		}
+
+		++idx;
+		if (idx == argc) break;
+
+		cla.nRuns = strtol(argv[idx], nullptr, 10);
+
 	} while (false);
 
 	return cla;
@@ -374,6 +384,7 @@ int main(int argc, char *argv[]) {
 	char const * inputFileName = nullptr;
 	bool uniformInput = false;
 	unsigned int kernelsToRun = 0;
+	int nRuns = 1;
 
 	CommandLineArguments cla = parseCommandLineArguments(argc, argv);
 
@@ -396,6 +407,7 @@ int main(int argc, char *argv[]) {
 		}
 	}
 	kernelsToRun = cla.kernelsToRun;
+	nRuns = cla.nRuns;
 
 	unsigned int * hostBins_one_thread_per_character = (unsigned int *)malloc(NUM_BINS * sizeof(unsigned int));
 	unsigned int * hostBins_atomic_private = (unsigned int *)malloc(NUM_BINS * sizeof(unsigned int));
@@ -436,7 +448,7 @@ int main(int argc, char *argv[]) {
 				if (!first) printf(",\n");
 				printf("\"%s\": ", "histogram_one_thread_per_character");
 				runForHistogramFunction(
-					histogram_one_thread_per_character,
+					histogram_one_thread_per_character, nRuns,
 					deviceWarmupInput, lengthWarmupInput,
 					hostInput, deviceInput, sizeInput, inputLength,
 					hostBins_one_thread_per_character, deviceBins, sizeBins
@@ -448,7 +460,7 @@ int main(int argc, char *argv[]) {
 				if (!first) printf(",\n");
 				printf("\"%s\": ", "histogram_atomic_private");
 				runForHistogramFunction(
-					histogram_atomic_private,
+					histogram_atomic_private, nRuns,
 					deviceWarmupInput, lengthWarmupInput,
 					hostInput, deviceInput, sizeInput, inputLength,
 					hostBins_atomic_private, deviceBins, sizeBins
@@ -460,7 +472,7 @@ int main(int argc, char *argv[]) {
 				if (!first) printf(",\n");
 				printf("\"%s\": ", "histogram_atomic_private_stride");
 				runForHistogramFunction(
-					histogram_atomic_private_stride,
+					histogram_atomic_private_stride, nRuns,
 					deviceWarmupInput, lengthWarmupInput,
 					hostInput, deviceInput, sizeInput, inputLength,
 					hostBins_atomic_private_stride, deviceBins, sizeBins
