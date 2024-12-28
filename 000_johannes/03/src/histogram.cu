@@ -32,6 +32,11 @@ constexpr char const * usageText =
 	"number_of_runs: Number of measurement runs to perform per kernel.\n"
 	"  Does not affect the number of warmup runs.\n";
 
+// Datentyp für die einzelnen Bins
+//   unsigned int hat nur 32 Bit, d.h. wollen wir Inputdaten >= 4 GiB korrekt
+//   behandeln, brauchen wir size_t mit 64 Bit
+using BinType = unsigned int;
+
 // *****************************************************************************
 // Utilities für Error-Checking
 // *****************************************************************************
@@ -120,7 +125,7 @@ struct MappingLetter {
 
 // Funktionstyp für Histogramm-Funktionen
 using HistogramFunction = void (
-	unsigned char * input, unsigned int * bins,	size_t numElements
+	unsigned char * input, BinType * bins,	size_t numElements
 );
 
 // Einfacher Histogramm-Kernel.
@@ -129,7 +134,7 @@ using HistogramFunction = void (
 //   jeder Thread erhöht atomar den Bin für "sein" Zeichen um 1.
 template<typename Mapping>
 __global__ void histogram_kernel_one_thread_per_character(
-	unsigned char * input, unsigned int * bins, size_t numElements
+	unsigned char * input, BinType * bins, size_t numElements
 ) {
 	unsigned int idx = blockIdx.x * blockDim.x + threadIdx.x;
 	if (idx >= numElements) return;
@@ -140,11 +145,11 @@ __global__ void histogram_kernel_one_thread_per_character(
 // Histogramm-Funktion, die den Kernel histogram_kernel_one_thread_per_character verwendet.
 template <typename Mapping>
 void histogram_one_thread_per_character(
-	unsigned char * input, unsigned int * bins,	size_t numElements	
+	unsigned char * input, BinType * bins,	size_t numElements	
 ) {
 	constexpr size_t nThreadsPerBlock = 128;
 
-	CUDA_CHECK(cudaMemset(bins, 0, Mapping::numBins * sizeof(unsigned int)));
+	CUDA_CHECK(cudaMemset(bins, 0, Mapping::numBins * sizeof(BinType)));
 
 	dim3 dimGrid((numElements + nThreadsPerBlock - 1) / nThreadsPerBlock, 1, 1);
 	dim3 dimBlock(nThreadsPerBlock, 1, 1);
@@ -166,10 +171,10 @@ void histogram_one_thread_per_character(
 //   zunächst im Shared Memory.
 template <typename Mapping>
 __global__ void histogram_kernel_atomic_private(
-	unsigned char * input, unsigned int * bins, size_t numElements
+	unsigned char * input, BinType * bins, size_t numElements
 ) {
 	unsigned int idx = blockIdx.x * blockDim.x + threadIdx.x;
-	__shared__ unsigned int sBins[Mapping::numBins * sizeof(unsigned int)];
+	__shared__ BinType sBins[Mapping::numBins * sizeof(BinType)];
 	for (unsigned int t = threadIdx.x; t < Mapping::numBins; t += blockDim.x) {
 		sBins[t] = 0;
 	}
@@ -189,11 +194,11 @@ __global__ void histogram_kernel_atomic_private(
 // Histogramm-Funktion, die den Kernel histogram_kernel_atomic_private verwendet.
 template <typename Mapping>
 void histogram_atomic_private(
-	unsigned char * input, unsigned int * bins, size_t numElements
+	unsigned char * input, BinType * bins, size_t numElements
 ) {
 	constexpr size_t nThreadsPerBlock = 256;
 
-	CUDA_CHECK(cudaMemset(bins, 0, Mapping::numBins * sizeof(unsigned int)));
+	CUDA_CHECK(cudaMemset(bins, 0, Mapping::numBins * sizeof(BinType)));
 	dim3 dimGrid((numElements + nThreadsPerBlock - 1) / nThreadsPerBlock, 1, 1);
 	dim3 dimBlock(nThreadsPerBlock, 1, 1);
 	histogram_kernel_atomic_private<Mapping> <<<dimGrid, dimBlock>>> (
@@ -211,12 +216,12 @@ void histogram_atomic_private(
 //   anderen ab.
 template <typename Mapping>
 __global__ void histogram_kernel_atomic_private_stride(
-	unsigned char * input, unsigned int * bins,	size_t numElements
+	unsigned char * input, BinType * bins,	size_t numElements
 ) {
 	unsigned int idx = blockIdx.x * blockDim.x + threadIdx.x;
 
 	// initialisiere Array im shared memory mit 0
-	__shared__ unsigned int sBins[Mapping::numBins * sizeof(unsigned int)];
+	__shared__ BinType sBins[Mapping::numBins * sizeof(BinType)];
 	for (unsigned int t = threadIdx.x; t < Mapping::numBins; t += blockDim.x) {
 		sBins[t] = 0;
 	}
@@ -250,11 +255,11 @@ __global__ void histogram_kernel_atomic_private_stride(
 // Histogramm-Funktion, die den Kernel histogram_kernel_atomic_private_stride verwendet.
 template <typename Mapping>
 void histogram_atomic_private_stride(
-	unsigned char *input, unsigned int * bins, size_t numElements
+	unsigned char *input, BinType * bins, size_t numElements
 ) {
 	constexpr size_t nThreadsPerBlock = 256;
 
-	CUDA_CHECK(cudaMemset(bins, 0, Mapping::numBins * sizeof(unsigned int)));
+	CUDA_CHECK(cudaMemset(bins, 0, Mapping::numBins * sizeof(BinType)));
 
 	dim3 dimGrid(1024, 1, 1);
 	dim3 dimBlock(nThreadsPerBlock, 1, 1);
@@ -269,7 +274,7 @@ void histogram_atomic_private_stride(
 //   Wird nachher zur Prüfung der GPU-Resultate benötigt.
 template <typename Mapping>
 void histogram_cpu(
-	unsigned char * input, unsigned int * bins,	size_t numElements
+	unsigned char * input, BinType * bins,	size_t numElements
 ) {
 	for (size_t i = 0; i < Mapping::numBins; ++i) bins[i] = 0;
 	for (size_t i = 0; i < numElements; ++i) ++bins[Mapping::map(input[i])];
@@ -293,12 +298,13 @@ void jsonPrintFloatAry(float * ary, size_t n) {
 	printf(" ]");
 }
 
-void jsonPrintUnsignedIntAry(unsigned int * ary, size_t n) {
+void jsonPrintBinTypeAry(BinType * ary, size_t n) {
+	constexpr char const * formatStr = sizeof(BinType) == 4? "%u" : "%lu";
 	printf("[ ");
 	if (n > 0) {
 		size_t i = 0;
 		for (;;) {
-			printf("%u", ary[i]);
+			printf(formatStr, ary[i]);
 			++i;
 			if (i == n) break;
 			printf(", ");
@@ -393,7 +399,7 @@ Config parseCommandLineArguments(int argc, char * argv []) {
 			} break;
 			case 'l': {
 				config.useMappingLetter = true;
-			}
+			} break;
 			default:
 				abortWithUsageMessage();
 		}
@@ -417,7 +423,7 @@ void measureHistogramFunction(
 	HistogramFunction histogramFn, int nRuns, size_t numBins,
 	unsigned char * deviceWarmupInput, size_t lengthWarmupInput,
 	unsigned char * hostInput, unsigned char * deviceInput, size_t sizeInput, size_t inputLength,
-	unsigned int * hostBins, unsigned int * deviceBins, size_t sizeBins
+	BinType * hostBins, BinType * deviceBins, size_t sizeBins
 ) {
 	float * timesTransferToDevice = (float *)malloc(nRuns * sizeof(float));
 	float * timesExecution = (float *)malloc(nRuns * sizeof(float));
@@ -457,7 +463,7 @@ void measureHistogramFunction(
 		printf("\"timesTransferToDevice\": "); jsonPrintFloatAry(timesTransferToDevice, nRuns); printf(",\n");
 		printf("\"timesExecution\": "); jsonPrintFloatAry(timesExecution, nRuns); printf(",\n");
 		printf("\"timesTransferFromDevice\": "); jsonPrintFloatAry(timesTransferFromDevice, nRuns); printf(",\n");
-		printf("\"bins\": "); jsonPrintUnsignedIntAry(hostBins, numBins); printf("\n");
+		printf("\"bins\": "); jsonPrintBinTypeAry(hostBins, numBins); printf("\n");
 	printf("}\n");
 
 	free(timesTransferFromDevice);
@@ -473,7 +479,7 @@ void measureHistogramFunction(
 template <typename Mapping>
 bool checkGpuResults(
 	char const * descr,
-	unsigned char * input, unsigned int * binsGpu, unsigned int * binsCpu, size_t numElements
+	unsigned char * input, BinType * binsGpu, BinType * binsCpu, size_t numElements
 ) {
 	for (size_t i = 0; i < Mapping::numBins; ++i)
 		if (binsCpu[i] != binsGpu[i]) {
@@ -499,9 +505,9 @@ void run(
 	Config config,
 	unsigned char * hostInput
 ) {
-	unsigned int * hostBins_one_thread_per_character = (unsigned int *)malloc(Mapping::numBins * sizeof(unsigned int));
-	unsigned int * hostBins_atomic_private = (unsigned int *)malloc(Mapping::numBins * sizeof(unsigned int));
-	unsigned int * hostBins_atomic_private_stride = (unsigned int *)malloc(Mapping::numBins * sizeof(unsigned int));
+	BinType * hostBins_one_thread_per_character = (BinType *)malloc(Mapping::numBins * sizeof(BinType));
+	BinType * hostBins_atomic_private = (BinType *)malloc(Mapping::numBins * sizeof(BinType));
+	BinType * hostBins_atomic_private_stride = (BinType *)malloc(Mapping::numBins * sizeof(BinType));
 
 	// GPU-Speicher für Warmup-Runs
 	constexpr size_t lengthWarmupInput = 1u << 22; // 100 MiB
@@ -510,10 +516,10 @@ void run(
 	CUDA_CHECK(cudaMalloc((void **) &deviceWarmupInput, sizeWarmupInput))
 
 	// allokiere GPU-Speicher
-	size_t sizeBins = Mapping::numBins * sizeof(unsigned int);
+	size_t sizeBins = Mapping::numBins * sizeof(BinType);
 	size_t sizeInput = config.inputLength * sizeof(unsigned char);
 	unsigned char * deviceInput;
-	unsigned int * deviceBins;
+	BinType * deviceBins;
 	CUDA_CHECK(cudaMalloc((void **) &deviceInput, sizeInput));
 	CUDA_CHECK(cudaMalloc((void **) &deviceBins, sizeBins));
 
@@ -583,7 +589,7 @@ void run(
 
 	// prüfe das Ergebnis des jeweils letzten Durchlaufs auf Korrektheit ...
     // ... generiere Histogramm auf der CPU, zum Vergleich
-	unsigned int * binsCpu = (unsigned int *)malloc(Mapping::numBins * sizeof(unsigned int));
+	BinType * binsCpu = (BinType *)malloc(Mapping::numBins * sizeof(BinType));
 	histogram_cpu<Mapping>(hostInput, binsCpu, config.inputLength);
 
     // ... und vergleiche
