@@ -102,10 +102,14 @@ float runAndMeasureCuda(Fct f, Args ... args) {
 //     0 -> 127
 struct Mapping128 {
 	constexpr static size_t numBins = 128;
-	static __host__ __device__ unsigned char map(unsigned char c) {
+	constexpr static __host__ __device__ unsigned char map(unsigned char c) {
 		return (c - 1u) & 0x7f;
 	}
 };
+
+static_assert(Mapping128::map(1) == 0);
+static_assert(Mapping128::map(2) == 1);
+static_assert(Mapping128::map(128) == 127);
 
 // Mapping für Teil b
 //   Zeichen 'A' bis 'Z' -> Bins 1 bis 26
@@ -113,11 +117,23 @@ struct Mapping128 {
 //   alle anderen Zeichen -> Bin 0
 struct MappingLetter {
 	constexpr static size_t numBins = 27;
-	static __host__ __device__ unsigned char map(unsigned char c) {
-		c = (c & 0xbf) - 64u;
-		return c & -(c <= 26u);
+	constexpr static __host__ __device__ unsigned char map(unsigned char c) {
+		c = (c & 0xdf) - 64u;
+		return c & (0u - (c <= 26u));
 	}
 };
+
+static_assert(MappingLetter::map(0) == 0);
+static_assert(MappingLetter::map('@') == 0);
+static_assert(MappingLetter::map('A') == 1);
+static_assert(MappingLetter::map('C') == 3);
+static_assert(MappingLetter::map('Z') == 26);
+static_assert(MappingLetter::map('[') == 0);
+static_assert(MappingLetter::map('`') == 0);
+static_assert(MappingLetter::map('a') == 1);
+static_assert(MappingLetter::map('c') == 3);
+static_assert(MappingLetter::map('z') == 26);
+static_assert(MappingLetter::map('{') == 0);
 
 // *****************************************************************************
 // Histogramm-Kernels und Funktionen

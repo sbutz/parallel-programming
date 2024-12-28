@@ -6,6 +6,7 @@ import subprocess
 MIN_SZ = 2 ** 20
 MAX_SZ = 2 ** 20 # 2 ** 32 # 4 GiB
 N_RUNS = 100
+INPUT_FILE_PATH = os.path.join('.', 'input_data', 'test.txt')
 
 jsonDirectory = os.path.join('.', 'measurements')
 
@@ -17,10 +18,19 @@ outDirectory = os.path.join(jsonDirectory, timestamp)
 
 os.mkdir(outDirectory)
 
-sz = MIN_SZ
-maxSz = MAX_SZ
+idx = 0
+cmd = os.path.join('.', 'bin', 'histogram')
 
-def generateSzArgsCombinations():
+for arg in ['oas', 'oasl']:
+    result = subprocess.run(
+        [cmd, INPUT_FILE_PATH, arg, f'{N_RUNS:0.0f}'],
+        stdout=subprocess.PIPE, universal_newlines=True, check=True
+    )
+    with open(os.path.join(outDirectory, f'{timestamp}-{idx:03.0f}.json'), 'w') as file:
+        file.write(result.stdout)
+    idx += 1
+
+def generateSzArgsLetterCombinations():
     szArgsCombinations = []
     sz = MIN_SZ
     while sz <= MAX_SZ:
@@ -29,12 +39,12 @@ def generateSzArgsCombinations():
             args += "oa"
         szArgsCombinations.append([f'{sz}', args])
         szArgsCombinations.append([f'{sz}', args + 'u'])
+        szArgsCombinations.append([f'{sz}', args + 'l'])
+        szArgsCombinations.append([f'{sz}', args + 'ul'])
         sz *= 2
     return szArgsCombinations
 
-idx = 0
-for sz, args in generateSzArgsCombinations():
-    cmd = os.path.join('.', 'bin', 'histogram')
+for sz, args in generateSzArgsLetterCombinations():
     result = subprocess.run(
         [cmd, '--', f'{sz}', args, f'{N_RUNS:0.0f}'],
         stdout=subprocess.PIPE, universal_newlines=True, check=True
