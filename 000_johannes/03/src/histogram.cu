@@ -7,6 +7,31 @@
 #include <sys/time.h>
 #include <cctype> 
 
+constexpr char const * usageText =
+	"Usage:\n"
+	"\n"
+	"histogram file_name [commands] [number_of_runs]\n"
+	"histogram -- number_of_characters [commands] [number_of_runs]\n"
+	"\n"
+	"Measures the runtimes of three different histogram kernels for\n"
+	"a given text file or the specified number of pseudo-random characters.\n"
+	"\n"
+	"Parameters:\n"
+	"\n"
+	"file_name: Input text file.\n"
+	"number_of_characters: Number of pseudo-random characters to generate.\n"
+	"commands: String of characters from the set {o,a,s,u,l}.\n"
+	"  o: Run histogram_kernel_one_thread_per_character.\n"
+	"  a: Run histogram_kernel_atomic_private.\n"
+	"  s: Run histogram_kernel_atomic_private_stride.\n"
+	"  u: Generate uniform input data consisting only of the character 'a'.\n"
+	"       Has no effect for text file input.\n"
+	"  l: Use only 27 bins,\n"
+	"       bins 1 to 26 for characters 'A'/'a' to 'Z'/'z',\n"
+	"       bin 0 for everything else.\n"
+	"number_of_runs: Number of measurement runs to perform per kernel.\n"
+	"  Does not affect the number of warmup runs.\n";
+
 // *****************************************************************************
 // Utilities für Error-Checking
 // *****************************************************************************
@@ -313,7 +338,7 @@ struct Config {
 	size_t inputLength = 0;
 	int nRuns = 1;
 	bool uniformInput = false;
-	bool letterMode = false;
+	bool useMappingLetter = false;
 };
 
 // *****************************************************************************
@@ -321,7 +346,7 @@ struct Config {
 // *****************************************************************************
 
 void abortWithUsageMessage() {
-	printf("Usage:\nhistogram\nor\nhistogram filename\nor\nhistogram -- number_of_characters\n");
+	fprintf(stderr, usageText);
 	exit(1);
 }
 
@@ -334,10 +359,7 @@ Config parseCommandLineArguments(int argc, char * argv []) {
 		.inputFileName = "input_data/test.txt"
 	};
 
-	if (argc <= 1) {
-		// use defaults
-		return config;
-	}
+	if (argc <= 1) abortWithUsageMessage();
 
 	int idx = 1;
 	if (strcmp(argv[1], "--")) {
@@ -370,7 +392,7 @@ Config parseCommandLineArguments(int argc, char * argv []) {
 				config.uniformInput = true;
 			} break;
 			case 'l': {
-				config.letterMode = true;
+				config.useMappingLetter = true;
 			}
 			default:
 				abortWithUsageMessage();
@@ -508,6 +530,7 @@ void run(
 		if (config.inputFileName) printf("\"fileName\": \"%s\",\n", config.inputFileName);
 		printf("\"inputLengthInCharacters\": %lu,\n", config.inputLength);
 		printf("\"uniformInput\": %s,\n", config.uniformInput ? "true" : "false");
+		printf("\"useMappingLetter\": %s,\n", config.useMappingLetter ? "true" : "false");
 
 		printf("\"measurements\": {\n");
 		bool first = true;
@@ -617,7 +640,7 @@ int main(int argc, char *argv[]) {
 		}
 	}
 
-	if (config.letterMode) {
+	if (config.useMappingLetter) {
 		run<MappingLetter> (config, hostInput);
 	} else {
 		run<Mapping128> (config, hostInput);
