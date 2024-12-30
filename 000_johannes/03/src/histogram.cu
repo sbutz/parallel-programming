@@ -108,9 +108,9 @@ struct Mapping128 {
 	}
 };
 
-static_assert(Mapping128::map(1) == 0);
-static_assert(Mapping128::map(2) == 1);
-static_assert(Mapping128::map(128) == 127);
+static_assert(Mapping128::map(1) == 0, "");
+static_assert(Mapping128::map(2) == 1, "");
+static_assert(Mapping128::map(128) == 127, "");
 
 // Mapping für Teil b
 //   Zeichen 'A' bis 'Z' -> Bins 1 bis 26
@@ -124,17 +124,17 @@ struct MappingLetter {
 	}
 };
 
-static_assert(MappingLetter::map(0) == 0);
-static_assert(MappingLetter::map('@') == 0);
-static_assert(MappingLetter::map('A') == 1);
-static_assert(MappingLetter::map('C') == 3);
-static_assert(MappingLetter::map('Z') == 26);
-static_assert(MappingLetter::map('[') == 0);
-static_assert(MappingLetter::map('`') == 0);
-static_assert(MappingLetter::map('a') == 1);
-static_assert(MappingLetter::map('c') == 3);
-static_assert(MappingLetter::map('z') == 26);
-static_assert(MappingLetter::map('{') == 0);
+static_assert(MappingLetter::map(0) == 0, "");
+static_assert(MappingLetter::map('@') == 0, "");
+static_assert(MappingLetter::map('A') == 1, "");
+static_assert(MappingLetter::map('C') == 3, "");
+static_assert(MappingLetter::map('Z') == 26, "");
+static_assert(MappingLetter::map('[') == 0, "");
+static_assert(MappingLetter::map('`') == 0, "");
+static_assert(MappingLetter::map('a') == 1, "");
+static_assert(MappingLetter::map('c') == 3, "");
+static_assert(MappingLetter::map('z') == 26, "");
+static_assert(MappingLetter::map('{') == 0, "");
 
 // *****************************************************************************
 // Histogramm-Kernels und Funktionen
@@ -664,9 +664,9 @@ void run(
 
 
 	// gib den GPU-Speicher frei
-	cudaFree(deviceBins);
-	cudaFree(deviceInput);
-	cudaFree(deviceWarmupInput);
+	(void)cudaFree(deviceBins);
+	(void)cudaFree(deviceInput);
+	(void)cudaFree(deviceWarmupInput);
 
 	// prüfe das Ergebnis des jeweils letzten Durchlaufs auf Korrektheit ...
     // ... generiere Histogramm auf der CPU, zum Vergleich
