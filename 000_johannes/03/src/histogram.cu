@@ -286,6 +286,54 @@ void histogram_atomic_private_stride(
 	CUDA_CHECK(cudaDeviceSynchronize());
 }
 
+// Histogramm-Kernel mit Stride, aber ohne Shared Memory.
+// Die Anzahl der Threads kann wieder unabhängig von der Grösse des Inputs gewählt
+//   werden. Die Threads arbeiten einen Abschnitt (Stride) der Eingabe nach dem
+//   anderen ab.
+template <typename Mapping>
+__global__ void histogram_kernel_atomic_global_stride(
+	unsigned char * input, BinType * bins,	size_t numElements
+) {
+	unsigned int idx = blockIdx.x * blockDim.x + threadIdx.x;
+
+	{
+		// baseLimit ist die kleinste Zeichenposition, ab der ein ab baseLimit beginnender
+		//   Stride genau am letzten Zeichen des Inputs endet oder über den Input hinausragt.
+		//   Im Prinizip wäre das die letzte Iteration der Schlefe. Da allerdings hier durch
+		//   eine if-Abfrage geprüft werden müsste, ob idx noch innerhalb des Inputs liegt,
+		//   spart es etwas Zeit, den letzten Stride separat zu behandeln.
+		int stride = blockDim.x * gridDim.x;
+		size_t baseLimit = numElements >= stride ? numElements - stride : 0;
+		size_t base = 0;
+		for (; base < baseLimit; base += stride) {
+			unsigned char c = input[base + idx];
+			atomicAdd(&bins[Mapping::map(c)], 1);
+		}
+		if (base + idx < numElements) {
+			unsigned char c = input[base + idx];
+			atomicAdd(&bins[Mapping::map(c)], 1);
+		}
+	}
+}
+
+// Histogramm-Funktion, die den Kernel histogram_kernel_atomic_global_stride verwendet.
+template <typename Mapping>
+void histogram_atomic_global_stride(
+	unsigned char *input, BinType * bins, size_t numElements
+) {
+	constexpr size_t nThreadsPerBlock = 256;
+
+	CUDA_CHECK(cudaMemset(bins, 0, Mapping::numBins * sizeof(BinType)));
+
+	dim3 dimGrid(1024, 1, 1);
+	dim3 dimBlock(nThreadsPerBlock, 1, 1);
+	histogram_kernel_atomic_global_stride<Mapping> <<<dimGrid, dimBlock>>> (
+		input, bins, numElements
+	);
+	CUDA_CHECK(cudaGetLastError());
+	CUDA_CHECK(cudaDeviceSynchronize());
+}
+
 // Histogramm-Funktion, die das Histogramm auf der CPU berechnet.
 //   Wird nachher zur Prüfung der GPU-Resultate benötigt.
 template <typename Mapping>
@@ -354,6 +402,7 @@ struct Config {
 	static constexpr unsigned int ONE_THREAD_PER_CHARACTER = 1;
 	static constexpr unsigned int ATOMIC_PRIVATE = 2;
 	static constexpr unsigned int ATOMIC_PRIVATE_STRIDE = 4;
+	static constexpr unsigned int ATOMIC_GLOBAL_STRIDE = 8;
 
 	unsigned int kernelsToRun = 0;
 	char const * inputFileName = nullptr;
@@ -377,8 +426,8 @@ Config parseCommandLineArguments(int argc, char * argv []) {
 	Config config = {
 		.kernelsToRun = Config::ONE_THREAD_PER_CHARACTER |
 			Config::ATOMIC_PRIVATE |
-			Config::ATOMIC_PRIVATE_STRIDE,
-		.inputFileName = "input_data/test.txt"
+			Config::ATOMIC_PRIVATE_STRIDE |
+			Config::ATOMIC_GLOBAL_STRIDE
 	};
 
 	if (argc <= 1) abortWithUsageMessage();
@@ -409,6 +458,9 @@ Config parseCommandLineArguments(int argc, char * argv []) {
 			} break;
 			case 's': {
 				config.kernelsToRun |= Config::ATOMIC_PRIVATE_STRIDE;
+			} break;
+			case 'g': {
+				config.kernelsToRun |= Config::ATOMIC_GLOBAL_STRIDE;
 			} break;
 			case 'u': {
 				config.uniformInput = true;
@@ -524,6 +576,7 @@ void run(
 	BinType * hostBins_one_thread_per_character = (BinType *)malloc(Mapping::numBins * sizeof(BinType));
 	BinType * hostBins_atomic_private = (BinType *)malloc(Mapping::numBins * sizeof(BinType));
 	BinType * hostBins_atomic_private_stride = (BinType *)malloc(Mapping::numBins * sizeof(BinType));
+	BinType * hostBins_atomic_global_stride = (BinType *)malloc(Mapping::numBins * sizeof(BinType));
 
 	// GPU-Speicher für Warmup-Runs
 	constexpr size_t lengthWarmupInput = 1u << 22; // 100 MiB
@@ -593,6 +646,18 @@ void run(
 				first = false;
 			}
 
+			if (config.kernelsToRun & Config::ATOMIC_GLOBAL_STRIDE) {
+				if (!first) printf(",\n");
+				printf("\"%s\": ", "histogram_atomic_global_stride");
+				measureHistogramFunction(
+					histogram_atomic_global_stride<Mapping>, config.nRuns, Mapping::numBins,
+					deviceWarmupInput, lengthWarmupInput,
+					hostInput, deviceInput, sizeInput, config.inputLength,
+					hostBins_atomic_global_stride, deviceBins, sizeBins
+				);
+				first = false;
+			}
+
 		printf("}\n");
 
 	printf("}\n");
@@ -628,6 +693,12 @@ void run(
 				"atomic_private_stride",
 				hostInput, hostBins_atomic_private_stride, binsCpu, config.inputLength
 			)
+		) & (
+			(config.kernelsToRun & Config::ATOMIC_GLOBAL_STRIDE) == 0 ||
+			checkGpuResults<Mapping>(
+				"atomic_global_stride",
+				hostInput, hostBins_atomic_global_stride, binsCpu, config.inputLength
+			)
 		)
 	)) {
 		exit(1);
@@ -635,6 +706,7 @@ void run(
 
 	// gib den Host-Speicher frei
 	free(binsCpu);
+	free(hostBins_atomic_global_stride);
 	free(hostBins_atomic_private_stride);
 	free(hostBins_atomic_private);
 	free(hostBins_one_thread_per_character);
