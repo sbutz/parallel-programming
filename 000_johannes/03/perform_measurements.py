@@ -18,10 +18,18 @@ outDirectory = os.path.join(jsonDirectory, timestamp)
 
 os.mkdir(outDirectory)
 
+deviceQueryCmd = os.path.join('.', 'bin', 'deviceQuery')
+result = subprocess.run(
+    [deviceQueryCmd], stdout=subprocess.PIPE, universal_newlines=True, check=True
+)
+with open(os.path.join(outDirectory, f'{timestamp}-devicequery.txt'), 'w') as file:
+    file.write(result.stdout)
+
+
 idx = 0
 cmd = os.path.join('.', 'bin', 'histogram')
 
-for arg in ['oas', 'oasl']:
+for arg in ['oasg', 'oasgl']:
     result = subprocess.run(
         [cmd, INPUT_FILE_PATH, arg, f'{N_RUNS:0.0f}'],
         stdout=subprocess.PIPE, universal_newlines=True, check=True
@@ -34,7 +42,7 @@ def generateSzArgsLetterCombinations():
     szArgsCombinations = []
     sz = MIN_SZ
     while sz <= MAX_SZ:
-        args = 's'
+        args = 'sg'
         if sz <= 2 ** 31:
             args += "oa"
         szArgsCombinations.append([f'{sz}', args])

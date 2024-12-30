@@ -17,10 +17,17 @@ NVCC_LDFLAGS = -lcuda -lcudart -Xcompiler -fopenmp
 SRCDIR = ./src
 OUTDIR = ./bin
 
+all: $(OUTDIR)/histogram $(OUTDIR)/deviceQuery
+
 $(OUTDIR)/histogram: Makefile $(SRCDIR)/histogram.cu
 	mkdir -p $(OUTDIR)
 	$(NVCC) $(NVCC_FLAGS) $(SRCDIR)/histogram.cu -c -o $(OUTDIR)/histogram.o
 	$(NVCC) $(GENCODE_FLAGS) $(OUTDIR)/histogram.o -o $(OUTDIR)/histogram $(NVCC_LDFLAGS)
+
+$(OUTDIR)/deviceQuery: Makefile nvidia/deviceQuery.cu
+	mkdir -p $(OUTDIR)
+	$(NVCC) $(NVCC_FLAGS) nvidia/deviceQuery.cu -c -o $(OUTDIR)/deviceQuery.o
+	$(NVCC) $(GENCODE_FLAGS) $(OUTDIR)/deviceQuery.o -o $(OUTDIR)/deviceQuery $(NVCC_LDFLAGS)
 
 .PHONY.: clean
 clean:
