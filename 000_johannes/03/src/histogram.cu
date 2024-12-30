@@ -13,7 +13,7 @@ constexpr char const * usageText =
 	"histogram file_name [commands] [number_of_runs]\n"
 	"histogram -- number_of_characters [commands] [number_of_runs]\n"
 	"\n"
-	"Measures the runtimes of three different histogram kernels for\n"
+	"Measures the runtimes of four different histogram kernels for\n"
 	"a given text file or the specified number of pseudo-random characters.\n"
 	"\n"
 	"Parameters:\n"
@@ -21,9 +21,10 @@ constexpr char const * usageText =
 	"file_name: Input text file.\n"
 	"number_of_characters: Number of pseudo-random characters to generate.\n"
 	"commands: String of characters from the set {o,a,s,u,l}.\n"
-	"  o: Run histogram_kernel_one_thread_per_character.\n"
+	"  o: Run histogram_kernel_atomic_global.\n"
 	"  a: Run histogram_kernel_atomic_private.\n"
 	"  s: Run histogram_kernel_atomic_private_stride.\n"
+	"  g: Run histogram_kernel_atomic_global_stride.\n"
 	"  u: Generate uniform input data consisting only of the character 'a'.\n"
 	"       Has no effect for text file input.\n"
 	"  l: Use only 27 bins,\n"
@@ -149,7 +150,7 @@ using HistogramFunction = void (
 // Die Anzahl Threads entspricht der Anzahl Zeichen im Input-String;
 //   jeder Thread erhöht atomar den Bin für "sein" Zeichen um 1.
 template<typename Mapping>
-__global__ void histogram_kernel_one_thread_per_character(
+__global__ void histogram_kernel_atomic_global(
 	unsigned char * input, BinType * bins, size_t numElements
 ) {
 	unsigned int idx = blockIdx.x * blockDim.x + threadIdx.x;
@@ -158,9 +159,9 @@ __global__ void histogram_kernel_one_thread_per_character(
 	atomicAdd(&bins[Mapping::map(c)], 1);
 }
 
-// Histogramm-Funktion, die den Kernel histogram_kernel_one_thread_per_character verwendet.
+// Histogramm-Funktion, die den Kernel histogram_kernel_atomic_global verwendet.
 template <typename Mapping>
-void histogram_one_thread_per_character(
+void histogram_atomic_global(
 	unsigned char * input, BinType * bins,	size_t numElements	
 ) {
 	constexpr size_t nThreadsPerBlock = 128;
@@ -170,7 +171,7 @@ void histogram_one_thread_per_character(
 	dim3 dimGrid((numElements + nThreadsPerBlock - 1) / nThreadsPerBlock, 1, 1);
 	dim3 dimBlock(nThreadsPerBlock, 1, 1);
 
-	histogram_kernel_one_thread_per_character<Mapping> <<<dimGrid, dimBlock>>> (
+	histogram_kernel_atomic_global<Mapping> <<<dimGrid, dimBlock>>> (
 		input, bins, numElements
 	);
 	
@@ -399,7 +400,7 @@ void randomFill(unsigned char * ary, size_t numChars) {
 // *****************************************************************************
 
 struct Config {
-	static constexpr unsigned int ONE_THREAD_PER_CHARACTER = 1;
+	static constexpr unsigned int ATOMIC_GLOBAL = 1;
 	static constexpr unsigned int ATOMIC_PRIVATE = 2;
 	static constexpr unsigned int ATOMIC_PRIVATE_STRIDE = 4;
 	static constexpr unsigned int ATOMIC_GLOBAL_STRIDE = 8;
@@ -423,12 +424,11 @@ void abortWithUsageMessage() {
 
 Config parseCommandLineArguments(int argc, char * argv []) {
 	// defaults
-	Config config = {
-		.kernelsToRun = Config::ONE_THREAD_PER_CHARACTER |
+	Config config {};
+	config.kernelsToRun = Config::ATOMIC_GLOBAL |
 			Config::ATOMIC_PRIVATE |
 			Config::ATOMIC_PRIVATE_STRIDE |
-			Config::ATOMIC_GLOBAL_STRIDE
-	};
+			Config::ATOMIC_GLOBAL_STRIDE;
 
 	if (argc <= 1) abortWithUsageMessage();
 
@@ -451,7 +451,7 @@ Config parseCommandLineArguments(int argc, char * argv []) {
 	for (size_t j = 0; argstr[j]; ++j) {
 		switch (argstr[j]) {
 			case 'o': {
-				config.kernelsToRun |= Config::ONE_THREAD_PER_CHARACTER;
+				config.kernelsToRun |= Config::ATOMIC_GLOBAL;
 			} break;
 			case 'a': {
 				config.kernelsToRun |= Config::ATOMIC_PRIVATE;
@@ -573,7 +573,7 @@ void run(
 	Config config,
 	unsigned char * hostInput
 ) {
-	BinType * hostBins_one_thread_per_character = (BinType *)malloc(Mapping::numBins * sizeof(BinType));
+	BinType * hostBins_atomic_global = (BinType *)malloc(Mapping::numBins * sizeof(BinType));
 	BinType * hostBins_atomic_private = (BinType *)malloc(Mapping::numBins * sizeof(BinType));
 	BinType * hostBins_atomic_private_stride = (BinType *)malloc(Mapping::numBins * sizeof(BinType));
 	BinType * hostBins_atomic_global_stride = (BinType *)malloc(Mapping::numBins * sizeof(BinType));
@@ -610,14 +610,14 @@ void run(
 		printf("\"measurements\": {\n");
 		bool first = true;
 
-			if (config.kernelsToRun & Config::ONE_THREAD_PER_CHARACTER) {
+			if (config.kernelsToRun & Config::ATOMIC_GLOBAL) {
 				if (!first) printf(",\n");
-				printf("\"%s\": ", "histogram_one_thread_per_character");
+				printf("\"%s\": ", "histogram_atomic_global");
 				measureHistogramFunction(
-					histogram_one_thread_per_character<Mapping>, config.nRuns, Mapping::numBins,
+					histogram_atomic_global<Mapping>, config.nRuns, Mapping::numBins,
 					deviceWarmupInput, lengthWarmupInput,
 					hostInput, deviceInput, sizeInput, config.inputLength,
-					hostBins_one_thread_per_character, deviceBins, sizeBins
+					hostBins_atomic_global, deviceBins, sizeBins
 				);
 				first = false;
 			}
@@ -676,10 +676,10 @@ void run(
     // ... und vergleiche
 	if (!(
 		(
-			(config.kernelsToRun & Config::ONE_THREAD_PER_CHARACTER) == 0 ||
+			(config.kernelsToRun & Config::ATOMIC_GLOBAL) == 0 ||
 			checkGpuResults<Mapping>(
-				"one_thread_per_character",
-				hostInput, hostBins_one_thread_per_character, binsCpu, config.inputLength
+				"atomic_global",
+				hostInput, hostBins_atomic_global, binsCpu, config.inputLength
 			)
 		) & (
 			(config.kernelsToRun & Config::ATOMIC_PRIVATE) == 0 ||
@@ -709,7 +709,7 @@ void run(
 	free(hostBins_atomic_global_stride);
 	free(hostBins_atomic_private_stride);
 	free(hostBins_atomic_private);
-	free(hostBins_one_thread_per_character);
+	free(hostBins_atomic_global);
 }
 
 int main(int argc, char *argv[]) {
