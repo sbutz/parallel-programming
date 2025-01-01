@@ -165,7 +165,7 @@ template <typename Mapping>
 void histogram_atomic_global(
 	unsigned char * input, BinType * bins,	size_t numElements	
 ) {
-	constexpr size_t nThreadsPerBlock = 128;
+	constexpr size_t nThreadsPerBlock = 256;
 
 	CUDA_CHECK(hipMemset(bins, 0, Mapping::numBins * sizeof(BinType)));
 
@@ -248,7 +248,7 @@ __global__ void histogram_kernel_atomic_private_stride(
 	{
 		// baseLimit ist die kleinste Zeichenposition, ab der ein ab baseLimit beginnender
 		//   Stride genau am letzten Zeichen des Inputs endet oder über den Input hinausragt.
-		//   Im Prinizip wäre das die letzte Iteration der Schlefe. Da allerdings hier durch
+		//   Im Prinzip wäre das die letzte Iteration der Schleife. Da allerdings hier durch
 		//   eine if-Abfrage geprüft werden müsste, ob idx noch innerhalb des Inputs liegt,
 		//   spart es etwas Zeit, den letzten Stride separat zu behandeln.
 		int stride = blockDim.x * gridDim.x;
