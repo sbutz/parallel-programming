@@ -34,7 +34,7 @@ def build_target(folder, target):
 
 class NvProfReport:
     def __init__(self, binary, args):
-        logger.info(f"Profiling: {binary} {" ".join(args)}")
+        logger.info(f'Profiling: {binary} {" ".join(args)}')
         with tempfile.TemporaryDirectory() as tmpdir:
             cmd = [
                 "nsys",
