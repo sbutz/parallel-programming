@@ -4,7 +4,7 @@
 #include <cuda.h>
 #include <iostream>
 
-static constexpr std::size_t N_ITERATIONS = 16;
+static constexpr std::size_t N_ITERATIONS = 100;
 
 __global__ void Blur(unsigned char *inputImage, unsigned char *outputImage, int width, int height,
                      int channels, int margin) {

@@ -1,0 +1,64 @@
+Generating '/tmp/nsys-report-4cac.qdstrm'
+[1/8] [0%                          ] report3.nsys-rep[1/8] [0%                          ] report3.nsys-rep[1/8] [0%                          ] report3.nsys-rep[1/8] [=15%                        ] report3.nsys-rep[1/8] [=====29%                    ] report3.nsys-rep[1/8] [=========44%                ] report3.nsys-rep[1/8] [=============59%            ] report3.nsys-rep[1/8] [=================73%        ] report3.nsys-rep[1/8] [=====================88%    ] report3.nsys-rep[1/8] [========================99% ] report3.nsys-rep[1/8] [========================100%] report3.nsys-rep[1/8] [========================100%] report3.nsys-rep
+[2/8] [0%                          ] report3.sqlite[2/8] [1%                          ] report3.sqlite[2/8] [2%                          ] report3.sqlite[2/8] [3%                          ] report3.sqlite[2/8] [4%                          ] report3.sqlite[2/8] [5%                          ] report3.sqlite[2/8] [6%                          ] report3.sqlite[2/8] [7%                          ] report3.sqlite[2/8] [8%                          ] report3.sqlite[2/8] [9%                          ] report3.sqlite[2/8] [10%                         ] report3.sqlite[2/8] [11%                         ] report3.sqlite[2/8] [12%                         ] report3.sqlite[2/8] [13%                         ] report3.sqlite[2/8] [14%                         ] report3.sqlite[2/8] [=15%                        ] report3.sqlite[2/8] [=16%                        ] report3.sqlite[2/8] [=17%                        ] report3.sqlite[2/8] [==18%                       ] report3.sqlite[2/8] [==19%                       ] report3.sqlite[2/8] [==20%                       ] report3.sqlite[2/8] [==21%                       ] report3.sqlite[2/8] [===22%                      ] report3.sqlite[2/8] [===23%                      ] report3.sqlite[2/8] [===24%                      ] report3.sqlite[2/8] [====25%                     ] report3.sqlite[2/8] [====26%                     ] report3.sqlite[2/8] [====27%                     ] report3.sqlite[2/8] [====28%                     ] report3.sqlite[2/8] [=====29%                    ] report3.sqlite[2/8] [=====30%                    ] report3.sqlite[2/8] [=====31%                    ] report3.sqlite[2/8] [=====32%                    ] report3.sqlite[2/8] [======33%                   ] report3.sqlite[2/8] [======34%                   ] report3.sqlite[2/8] [======35%                   ] report3.sqlite[2/8] [=======36%                  ] report3.sqlite[2/8] [=======37%                  ] report3.sqlite[2/8] [=======38%                  ] report3.sqlite[2/8] [=======39%                  ] report3.sqlite[2/8] [========40%                 ] report3.sqlite[2/8] [========41%                 ] report3.sqlite[2/8] [========42%                 ] report3.sqlite[2/8] [=========43%                ] report3.sqlite[2/8] [=========44%                ] report3.sqlite[2/8] [=========45%                ] report3.sqlite[2/8] [=========46%                ] report3.sqlite[2/8] [==========47%               ] report3.sqlite[2/8] [==========48%               ] report3.sqlite[2/8] [==========49%               ] report3.sqlite[2/8] [===========50%              ] report3.sqlite[2/8] [===========51%              ] report3.sqlite[2/8] [===========52%              ] report3.sqlite[2/8] [===========53%              ] report3.sqlite[2/8] [============54%             ] report3.sqlite[2/8] [============55%             ] report3.sqlite[2/8] [============56%             ] report3.sqlite[2/8] [============57%             ] report3.sqlite[2/8] [=============58%            ] report3.sqlite[2/8] [=============59%            ] report3.sqlite[2/8] [=============60%            ] report3.sqlite[2/8] [==============61%           ] report3.sqlite[2/8] [==============62%           ] report3.sqlite[2/8] [==============63%           ] report3.sqlite[2/8] [==============64%           ] report3.sqlite[2/8] [===============65%          ] report3.sqlite[2/8] [===============66%          ] report3.sqlite[2/8] [===============67%          ] report3.sqlite[2/8] [================68%         ] report3.sqlite[2/8] [================69%         ] report3.sqlite[2/8] [================70%         ] report3.sqlite[2/8] [================71%         ] report3.sqlite[2/8] [=================72%        ] report3.sqlite[2/8] [=================73%        ] report3.sqlite[2/8] [=================74%        ] report3.sqlite[2/8] [==================75%       ] report3.sqlite[2/8] [==================76%       ] report3.sqlite[2/8] [==================77%       ] report3.sqlite[2/8] [==================78%       ] report3.sqlite[2/8] [===================79%      ] report3.sqlite[2/8] [===================80%      ] report3.sqlite[2/8] [===================81%      ] report3.sqlite[2/8] [===================82%      ] report3.sqlite[2/8] [====================83%     ] report3.sqlite[2/8] [====================84%     ] report3.sqlite[2/8] [====================85%     ] report3.sqlite[2/8] [=====================86%    ] report3.sqlite[2/8] [=====================87%    ] report3.sqlite[2/8] [=====================88%    ] report3.sqlite[2/8] [=====================89%    ] report3.sqlite[2/8] [======================90%   ] report3.sqlite[2/8] [======================91%   ] report3.sqlite[2/8] [======================92%   ] report3.sqlite[2/8] [=======================93%  ] report3.sqlite[2/8] [=======================94%  ] report3.sqlite[2/8] [=======================95%  ] report3.sqlite[2/8] [=======================96%  ] report3.sqlite[2/8] [========================97% ] report3.sqlite[2/8] [========================98% ] report3.sqlite[2/8] [========================99% ] report3.sqlite[2/8] [========================100%] report3.sqlite[2/8] [========================100%] report3.sqlite
+[3/8] Executing 'nvtx_sum' stats report
+[4/8] Executing 'osrt_sum' stats report
+
+ Time (%)  Total Time (ns)  Num Calls    Avg (ns)      Med (ns)     Min (ns)    Max (ns)    StdDev (ns)            Name         
+ --------  ---------------  ---------  ------------  -------------  ---------  -----------  ------------  ----------------------
+     77.6   81'294'092'640        855  95'080'810.1  100'100'576.0  1'346'432  100'210'720  19'961'958.6  sem_timedwait         
+     18.5   19'374'864'960      1'731  11'192'874.0    1'803'392.0      6'496   73'878'400  21'308'413.4  ioctl                 
+      2.6    2'716'316'960     88'234      30'785.4       29'280.0        992      461'568       6'038.4  fwrite                
+      0.4      429'605'152     40'400      10'633.8        8'928.0      7'776      185'344       5'017.2  fread                 
+      0.3      365'771'584        351   1'042'084.3       41'600.0      8'000  226'922'944  12'337'648.1  poll                  
+      0.3      363'950'016        204   1'784'068.7       32'896.0     10'560    4'591'680   1'850'834.8  fclose                
+      0.2      218'489'888        216   1'011'527.3       50'560.0     11'552    2'766'656   1'057'858.5  fopen                 
+      0.0        4'352'288        351      12'399.7       11'680.0      7'072      119'488       7'871.0  write                 
+      0.0        2'969'952        354       8'389.7        7'968.0      7'104       26'432       2'435.3  read                  
+      0.0        2'479'872          8     309'984.0       44'496.0     33'824    2'149'312     743'332.7  sem_wait              
+      0.0        2'124'576        100      21'245.8       19'872.0     18'496       41'920       4'122.8  fflush                
+      0.0          797'952         31      25'740.4       18'912.0      9'504       66'848      16'343.6  mmap                  
+      0.0          270'560          2     135'280.0      135'280.0    134'496      136'064       1'108.7  pthread_create        
+      0.0          159'168          8      19'896.0       16'432.0     12'992       31'616       7'050.2  open                  
+      0.0          155'584          4      38'896.0       37'696.0      7'392       72'800      35'367.3  fgets                 
+      0.0          100'640         14       7'188.6        6'720.0      5'984       10'272       1'230.3  fcntl                 
+      0.0           85'536          3      28'512.0       27'360.0     25'664       32'512       3'566.4  pipe2                 
+      0.0           35'072          1      35'072.0       35'072.0     35'072       35'072           0.0  open64                
+      0.0           34'784          1      34'784.0       34'784.0     34'784       34'784           0.0  connect               
+      0.0           33'664          2      16'832.0       16'832.0     16'608       17'056         316.8  munmap                
+      0.0           33'152          1      33'152.0       33'152.0     33'152       33'152           0.0  socket                
+      0.0            6'752          6       1'125.3        1'088.0        992        1'312         145.1  pthread_cond_broadcast
+
+[5/8] Executing 'cuda_api_sum' stats report
+
+ Time (%)  Total Time (ns)  Num Calls    Avg (ns)      Med (ns)     Min (ns)    Max (ns)    StdDev (ns)           Name         
+ --------  ---------------  ---------  ------------  ------------  ----------  -----------  ------------  ---------------------
+     43.7   10'158'492'544        200  50'792'462.7  52'253'808.0  48'087'072   54'889'056   2'134'118.0  cudaMalloc           
+     31.6    7'353'085'696        100  73'530'857.0  73'715'536.0  72'927'232   73'988'320     337'129.8  cudaDeviceSynchronize
+     14.7    3'429'944'736        200  17'149'723.7  16'214'784.0  11'520'128   28'475'520   5'439'234.4  cudaMemcpy           
+      9.8    2'288'570'208        201  11'385'921.4   9'532'512.0   9'049'952  377'555'744  25'958'669.6  cudaFree             
+      0.2       39'468'768        100     394'687.7     178'080.0      90'880      935'552     297'408.6  cudaLaunchKernel     
+
+[6/8] Executing 'cuda_gpu_kern_sum' stats report
+
+ Time (%)  Total Time (ns)  Instances    Avg (ns)      Med (ns)     Min (ns)    Max (ns)   StdDev (ns)                             Name                           
+ --------  ---------------  ---------  ------------  ------------  ----------  ----------  -----------  ----------------------------------------------------------
+    100.0    7'332'454'752        100  73'324'547.5  73'324'576.0  73'233'440  73'408'544     36'855.9  Blur(unsigned char *, unsigned char *, int, int, int, int)
+
+[7/8] Executing 'cuda_gpu_mem_time_sum' stats report
+
+ Time (%)  Total Time (ns)  Count    Avg (ns)      Med (ns)     Min (ns)    Max (ns)   StdDev (ns)           Operation          
+ --------  ---------------  -----  ------------  ------------  ----------  ----------  -----------  ----------------------------
+     62.1    1'890'832'992    100  18'908'329.9  18'929'952.0  16'535'008  24'833'024  1'099'948.6  [CUDA memcpy Device-to-Host]
+     37.9    1'152'024'928    100  11'520'249.3  11'480'736.0  11'273'888  12'068'800    157'230.3  [CUDA memcpy Host-to-Device]
+
+[8/8] Executing 'cuda_gpu_mem_size_sum' stats report
+
+ Total (MB)  Count  Avg (MB)  Med (MB)  Min (MB)  Max (MB)  StdDev (MB)           Operation          
+ ----------  -----  --------  --------  --------  --------  -----------  ----------------------------
+  6'307.891    100    63.079    63.079    63.079    63.079        0.000  [CUDA memcpy Device-to-Host]
+  6'307.891    100    63.079    63.079    63.079    63.079        0.000  [CUDA memcpy Host-to-Device]
+
+Generated:
+    /home/jbecker/Documents/git/parallel-programming/000_johannes/01_abgabe/./measurements/20250103-173215505/temp/report3.nsys-rep
+    /home/jbecker/Documents/git/parallel-programming/000_johannes/01_abgabe/./measurements/20250103-173215505/temp/report3.sqlite
