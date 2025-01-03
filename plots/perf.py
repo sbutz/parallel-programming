@@ -3,6 +3,8 @@
 import argparse
 import logging
 import math
+import matplotlib
+matplotlib.use('Agg')  # Use a non-interactive backend
 import matplotlib.ticker as ticker
 import os
 import pandas as pd
@@ -44,6 +46,7 @@ class NvProfReport:
                 binary,
                 *args,
             ]
+            print(cmd)
             result = subprocess.run(
                 cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, check=True
             )
@@ -61,7 +64,7 @@ class NvProfReport:
         # [7] = StdDev (ns)
         # [8] = Name
         parts = lines[0].split()
-        return float(parts[3]) / 1000  # in us
+        return float(parts[3].replace("'", '')) / 1000  # in us
 
     def get_kernel_launch_time(self):
         lines = [l for l in self.report if "cudaLaunchKernel" in l]
@@ -75,7 +78,7 @@ class NvProfReport:
         # [7] = StdDev (ns)
         # [8] = Name
         parts = lines[0].split()
-        return float(parts[3]) / 1000  # in us
+        return float(parts[3].replace("'", '')) / 1000  # in us
 
     def get_memcpy_to_device_time(self):
         lines = [l for l in self.report if "[CUDA memcpy Host-to-Device]" in l]
@@ -89,7 +92,7 @@ class NvProfReport:
         # [7] = StdDev (ns)
         # [8] = Name
         parts = lines[0].split()
-        return float(parts[3]) / 1000  # in us
+        return float(parts[3].replace("'", '')) / 1000  # in us
 
     def get_memcpy_to_host_time(self):
         lines = [l for l in self.report if "[CUDA memcpy Device-to-Host]" in l]
@@ -103,7 +106,7 @@ class NvProfReport:
         # [7] = StdDev (ns)
         # [8] = Name
         parts = lines[0].split()
-        return float(parts[3]) / 1000  # in us
+        return float(parts[3].replace("'", '')) / 1000  # in us
 
 
 def image_filter():
@@ -143,7 +146,7 @@ def image_filter():
     )
     fig.gca().set_title("Kernel execution times")
     fig.gca().set_ylabel("Time [us]")
-    fig.gca().set_yscale("log", base=2)
+    fig.gca().set_yscale("log", basey=2)
     fig.gca().set_xticklabels(fig.gca().get_xticklabels(), rotation=0)
     fig.gca().yaxis.set_major_formatter(ticker.FormatStrFormatter("%d"))
     plot_path = os.path.join(plot_dir, "01_image_filter", "kernel_execution_times.png")
