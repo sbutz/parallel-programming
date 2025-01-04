@@ -17,6 +17,11 @@ SRCDIR=./src
 OBJDIR=./bin
 NVIDIADIR=./nvidia
 
+KERNELS = $(OBJDIR)/01_grayscale \
+	 $(OBJDIR)/02_blur \
+
+MARGIN=8
+
 all: $(KERNELS) $(OBJDIR)/deviceQuery
 
 $(OBJDIR)/deviceQuery.o: Makefile $(NVIDIADIR)/deviceQuery.cu
@@ -30,10 +35,6 @@ $(OBJDIR)/%.o: $(SRCDIR)/%.cu $(SRCDIR)/jpeg.h $(SRCDIR)/util.h
 $(OBJDIR)/%: $(OBJDIR)/%.o
 	$(NVCC) $(GENCODE_FLAGS) -o $@ $(NVCC_LDFLAGS) $^
 
-KERNELS = $(OBJDIR)/01_grayscale \
-	 $(OBJDIR)/02_blur \
-
-MARGIN=8
 NVPROF=nsys profile --stats=true --output="./build/report%n"
 run: $(KERNELS)
 	$(NVPROF) $(OBJDIR)/01_grayscale image.jpg $(OBJDIR)/image_sw.jpg
