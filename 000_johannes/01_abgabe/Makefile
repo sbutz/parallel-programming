@@ -19,16 +19,16 @@ NVIDIADIR=./nvidia
 
 all: $(KERNELS) $(OUTDIR)/deviceQuery
 
+$(OUTDIR)/deviceQuery.o: Makefile $(NVIDIADIR)/deviceQuery.cu
+	mkdir -p $(OBJDIR)
+	$(NVCC) $(NVCC_FLAGS) $(NVIDIADIR)/deviceQuery.cu -c -o $(OBJDIR)/deviceQuery.o
+
 $(OBJDIR)/%.o: $(SRCDIR)/%.cu $(SRCDIR)/jpeg.h $(SRCDIR)/util.h
 	@mkdir -p $(OBJDIR)
 	$(NVCC) $(NVCC_FLAGS) -c -o $@ $<
 
 $(OBJDIR)/%: $(OBJDIR)/%.o
 	$(NVCC) $(GENCODE_FLAGS) -o $@ $(NVCC_LDFLAGS) $^
-
-$(OUTDIR)/deviceQuery.o: Makefile $(NVIDIADIR)/deviceQuery.cu
-	mkdir -p $(OBJDIR)
-	$(NVCC) $(NVCC_FLAGS) $(NVIDIADIR)/deviceQuery.cu -c -o $(OBJDIR)/deviceQuery.o
 
 KERNELS = $(OBJDIR)/01_grayscale \
 	 $(OBJDIR)/02_blur \
