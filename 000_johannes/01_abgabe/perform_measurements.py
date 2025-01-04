@@ -26,6 +26,14 @@ os.makedirs(imagesOutDirectory, exist_ok=True)
 currentImagesOutDirectory = os.path.join(imagesOutDirectory, timestamp)
 os.mkdir(currentImagesOutDirectory)
 
+deviceQueryCmd = os.path.join('.', 'bin', 'deviceQuery')
+result = subprocess.run(
+    [deviceQueryCmd], stdout=subprocess.PIPE, universal_newlines=True, check=True
+)
+with open(os.path.join(currentMeasurementDirectory, f'{timestamp}-devicequery.txt'), 'w') as file:
+    file.write(result.stdout)
+
+
 def profile(binary, args):
     logger.info(f'Profiling: {binary} {" ".join(args)}')
     cmd = [
