@@ -25,7 +25,7 @@ $(OBJDIR)/%: $(OBJDIR)/%.o
 	$(NVCC) $(GENCODE_FLAGS) -o $@ $(NVCC_LDFLAGS) $^
 
 $(OUTDIR)/deviceQuery.o: Makefile $(NVIDIADIR)/deviceQuery.cu
-	mkdir -p $(OUTDIR)
+	mkdir -p $(OBJDIR)
 	$(NVCC) $(NVCC_FLAGS) $(NVIDIADIR)/deviceQuery.cu -c -o $(OUTDIR)/deviceQuery.o
 
 KERNELS = $(OBJDIR)/01_grayscale \
