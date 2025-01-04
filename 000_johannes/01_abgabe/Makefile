@@ -17,7 +17,7 @@ SRCDIR=./src
 OBJDIR=./bin
 NVIDIADIR=./nvidia
 
-all: $(KERNELS) $(OUTDIR)/deviceQuery
+all: $(KERNELS) $(OBJDIR)/deviceQuery
 
 $(OBJDIR)/deviceQuery.o: Makefile $(NVIDIADIR)/deviceQuery.cu
 	mkdir -p $(OBJDIR)
