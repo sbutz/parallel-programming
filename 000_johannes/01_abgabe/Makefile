@@ -15,6 +15,18 @@ NVCC_LDFLAGS = -ccbin=g++  -lcuda -lcudart -ljpeg
 
 SRCDIR=./src
 OBJDIR=./bin
+NVIDIADIR=./nvidia
+
+KERNELS = $(OBJDIR)/01_grayscale \
+	 $(OBJDIR)/02_blur \
+
+MARGIN=8
+
+all: $(KERNELS) $(OBJDIR)/deviceQuery
+
+$(OBJDIR)/deviceQuery.o: Makefile $(NVIDIADIR)/deviceQuery.cu
+	mkdir -p $(OBJDIR)
+	$(NVCC) $(NVCC_FLAGS) $(NVIDIADIR)/deviceQuery.cu -c -o $(OBJDIR)/deviceQuery.o
 
 $(OBJDIR)/%.o: $(SRCDIR)/%.cu $(SRCDIR)/jpeg.h $(SRCDIR)/util.h
 	@mkdir -p $(OBJDIR)
@@ -23,13 +35,6 @@ $(OBJDIR)/%.o: $(SRCDIR)/%.cu $(SRCDIR)/jpeg.h $(SRCDIR)/util.h
 $(OBJDIR)/%: $(OBJDIR)/%.o
 	$(NVCC) $(GENCODE_FLAGS) -o $@ $(NVCC_LDFLAGS) $^
 
-
-KERNELS = $(OBJDIR)/01_grayscale \
-	 $(OBJDIR)/02_blur \
-
-all: $(KERNELS)
-
-MARGIN=8
 NVPROF=nsys profile --stats=true --output="./build/report%n"
 run: $(KERNELS)
 	$(NVPROF) $(OBJDIR)/01_grayscale image.jpg $(OBJDIR)/image_sw.jpg

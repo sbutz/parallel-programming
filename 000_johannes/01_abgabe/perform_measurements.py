@@ -26,6 +26,14 @@ os.makedirs(imagesOutDirectory, exist_ok=True)
 currentImagesOutDirectory = os.path.join(imagesOutDirectory, timestamp)
 os.mkdir(currentImagesOutDirectory)
 
+deviceQueryCmd = os.path.join('.', 'bin', 'deviceQuery')
+result = subprocess.run(
+    [deviceQueryCmd], stdout=subprocess.PIPE, universal_newlines=True, check=True
+)
+with open(os.path.join(currentMeasurementDirectory, f'{timestamp}-devicequery.txt'), 'w') as file:
+    file.write(result.stdout)
+
+
 def profile(binary, args):
     logger.info(f'Profiling: {binary} {" ".join(args)}')
     cmd = [
@@ -60,7 +68,7 @@ def get_kernel_execution_time(report, kernel_name):
     return {
         f'Exec {s}': (float(parts[i]) if s in ['Time (percent)', 'Instances']
             else ' '.join(parts[NSYS_IDX['Name']:]) if s == 'Name'
-            else float(parts[i].replace("'", '')) / 1000
+            else float(parts[i].replace("'", '').replace(",", '')) / 1000
         ) for s, i in NSYS_IDX.items() 
     }
 
@@ -71,7 +79,7 @@ def get_kernel_launch_time(report):
     return {
         f'Launch {s}': (float(parts[i]) if s in ['Time (percent)', 'Instances']
             else ' '.join(parts[NSYS_IDX['Name']:]) if s == 'Name'
-            else float(parts[i].replace("'", '')) / 1000
+            else float(parts[i].replace("'", '').replace(",", '')) / 1000
         ) for s, i in NSYS_IDX.items() 
     }
 
@@ -82,7 +90,7 @@ def get_memcpy_to_device_time(report):
     return {
         f'Memcpy To Device {s}': (float(parts[i]) if s in ['Time (percent)', 'Instances']
             else ' '.join(parts[NSYS_IDX['Name']:]) if s == 'Name'
-            else float(parts[i].replace("'", '')) / 1000
+            else float(parts[i].replace("'", '').replace(",", '')) / 1000
         ) for s, i in NSYS_IDX.items() 
     }
 
@@ -93,7 +101,7 @@ def get_memcpy_to_host_time(report):
     return {
         f'Memcpy To Host {s}': (float(parts[i]) if s in ['Time (percent)', 'Instances']
             else ' '.join(parts[NSYS_IDX['Name']:]) if s == 'Name'
-            else float(parts[i].replace("'", '')) / 1000
+            else float(parts[i].replace("'", '').replace(",", '')) / 1000
         ) for s, i in NSYS_IDX.items() 
     }
 
