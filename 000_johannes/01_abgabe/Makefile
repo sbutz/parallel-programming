@@ -17,6 +17,8 @@ SRCDIR=./src
 OBJDIR=./bin
 NVIDIADIR=./nvidia
 
+all: $(KERNELS) $(OUTDIR)/deviceQuery
+
 $(OBJDIR)/%.o: $(SRCDIR)/%.cu $(SRCDIR)/jpeg.h $(SRCDIR)/util.h
 	@mkdir -p $(OBJDIR)
 	$(NVCC) $(NVCC_FLAGS) -c -o $@ $<
@@ -30,8 +32,6 @@ $(OUTDIR)/deviceQuery.o: Makefile $(NVIDIADIR)/deviceQuery.cu
 
 KERNELS = $(OBJDIR)/01_grayscale \
 	 $(OBJDIR)/02_blur \
-
-all: $(KERNELS) $(OUTDIR)/deviceQuery
 
 MARGIN=8
 NVPROF=nsys profile --stats=true --output="./build/report%n"
