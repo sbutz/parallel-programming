@@ -19,7 +19,7 @@ NVIDIADIR=./nvidia
 
 all: $(KERNELS) $(OUTDIR)/deviceQuery
 
-$(OUTDIR)/deviceQuery.o: Makefile $(NVIDIADIR)/deviceQuery.cu
+$(OBJDIR)/deviceQuery.o: Makefile $(NVIDIADIR)/deviceQuery.cu
 	mkdir -p $(OBJDIR)
 	$(NVCC) $(NVCC_FLAGS) $(NVIDIADIR)/deviceQuery.cu -c -o $(OBJDIR)/deviceQuery.o
 
