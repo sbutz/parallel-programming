@@ -41,6 +41,19 @@ run: $(KERNELS)
 		$(NVPROF) $$kernel $(INPUT_SIZE); \
 	done
 
+zip:
+	@cd $(shell git rev-parse --show-toplevel); \
+	zip -r 04_reduction.zip \
+		04_reduction/Makefile \
+		04_reduction/*.cu \
+		04_reduction/*.h \
+		04_reduction/*.pdf \
+		04_reduction/.gitignore \
+		*.md \
+		*.gitignore \
+		plots/04_reduction/ \
+		plots/*.py
+
 .PHONY.: clean
 clean:
 	rm -rf $(OBJDIR)
