@@ -1,0 +1,5 @@
+bin/
+.vscode/
+**/doc/~*
+.ipynb_checkpoints/
+
