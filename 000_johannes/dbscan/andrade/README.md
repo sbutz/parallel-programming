@@ -1,0 +1,1 @@
+An implementation of the algorithm described by [Andrade et al.](https://www.researchgate.net/publication/249642413_G-DBSCAN_A_GPU_accelerated_algorithm_for_density-based_clustering).
