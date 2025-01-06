@@ -6,7 +6,7 @@ wget https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/
 sudo dpkg -i cuda-keyring_1.1-1_all.deb
 sudo apt update
 sudo apt install build-essential git tmux vim libjpeg-dev cuda-toolkit-12-6 cuda-runtime-12-6 \
-bc gpu-burn python3 python3-matplotlib python3-pandas
+bc gpu-burn python3 python3-matplotlib python3-pandas zip
 ```
 - Add exports to ~/.bashrc
 ```bash
