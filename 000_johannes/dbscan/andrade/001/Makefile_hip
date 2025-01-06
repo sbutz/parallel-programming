@@ -1,0 +1,25 @@
+HIP_PATH?= $(wildcard /opt/rocm)
+HIPCC=$(HIP_PATH)/bin/hipcc
+
+CXXFLAGS =-g -std=c++14
+
+CXX=$(HIPCC)
+
+SRCDIR=./src
+OBJDIR=./bin
+NVIDIADIR=./nvidia
+
+MARGIN=8
+
+all: $(OBJDIR)/read_input
+
+$(OBJDIR)/read_input: $(OBJDIR)/read_input.o
+	$(HIPCC) $(GENCODE_FLAGS) -o $@ $^
+
+$(OBJDIR)/%.o: $(SRCDIR)/%.cc
+	@mkdir -p $(OBJDIR)
+	$(HIPCC) $(CXXFLAGS) -c -o $@ $<
+
+.PHONY.: clean
+clean:
+	rm -rf $(OBJDIR)
