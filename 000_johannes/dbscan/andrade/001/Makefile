@@ -17,10 +17,14 @@ SRCDIR=./src
 OBJDIR=./bin
 NVIDIADIR=./nvidia
 
-all: $(OBJDIR)/read_input
+all: $(OBJDIR)/andrade
 
-$(OBJDIR)/read_input: $(OBJDIR)/read_input.o
+$(OBJDIR)/andrade: $(OBJDIR)/andrade.o $(OBJDIR)/dbscan.o
 	$(NVCC) $(GENCODE_FLAGS) -o $@ $(NVCC_LDFLAGS) $^
+
+$(OBJDIR)/andrade.o: $(SRCDIR)/andrade.cc $(SRCDIR)/read_input.h $(SRCDIR)/dbscan.h
+
+$(OBJDIR)/dbscan.o: $(SRCDIR)/dbscan.cu $(SRCDIR)/dbscan.h $(SRCDIR)/cuda_helpers.h
 
 $(OBJDIR)/%.o: $(SRCDIR)/%.cu
 	@mkdir -p $(OBJDIR)

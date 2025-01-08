@@ -1,9 +1,13 @@
+#include "dbscan.h"
+
+#include "cuda_helpers.h"
+
 #include <cuda.h>
 #include <cuda_runtime.h>
 
 using Count = size_t;
 
-__device__ void countForPoint (
+static __device__ void countForPoint (
   Count * dcounts,
   std::size_t idx,
   float * xs, float * ys, Count n,
@@ -20,7 +24,7 @@ __device__ void countForPoint (
   dcounts[idx] = cnt;
 }
 
-__global__ void countNeighborsKernel (
+static __global__ void countNeighborsKernel (
   Count * dcounts,
   float * xs, float * ys, Count n,
   float r
@@ -36,5 +40,50 @@ __global__ void countNeighborsKernel (
   }
   if (tid < n - s) {
     countForPoint(dcounts, s + tid, xs, ys, n, r);
+  }
+}
+
+void countNeighbors(
+  Count * dcounts,
+  float * xs, float * ys, Count n,
+  float r
+) {
+  constexpr unsigned int nThreadsPerBlock = 256;
+
+  float * d_xs = nullptr, * d_ys = nullptr;
+  Count * d_dcounts = nullptr;
+
+  CUDA_CHECK(cudaMalloc (&d_xs, n * sizeof(float)));
+  CUDA_CHECK(cudaMalloc (&d_ys, n * sizeof(float)));
+  CUDA_CHECK(cudaMalloc (&d_dcounts, n * sizeof(Count)));
+  CUDA_CHECK(cudaMemcpy (d_xs, xs, n * sizeof(float), cudaMemcpyHostToDevice));
+  CUDA_CHECK(cudaMemcpy (d_ys, ys, n * sizeof(float), cudaMemcpyHostToDevice));
+
+  dim3 dimBlock(nThreadsPerBlock, 1, 1);
+  dim3 dimGrid((n + nThreadsPerBlock - 1) / nThreadsPerBlock, 1, 1);
+  countNeighborsKernel <<<dimGrid, dimBlock>>> (d_dcounts, d_xs, d_ys, n, r);
+	CUDA_CHECK(cudaGetLastError());
+
+  CUDA_CHECK(cudaMemcpy (dcounts, d_dcounts, n * sizeof(Count), cudaMemcpyDeviceToHost));
+
+  CUDA_CHECK(cudaFree (d_dcounts));
+  CUDA_CHECK(cudaFree (d_ys));
+  CUDA_CHECK(cudaFree (d_xs));
+}
+
+void countNeighborsCpu(
+  Count * dcounts,
+  float * xs, float * ys, Count n,
+  float r
+) {
+  float rsq = r * r;
+  for (size_t i = 0; i < n; ++i) {
+    Count cnt = 0;
+    for (size_t j = 0; j < n; ++j) {
+      float xd = xs[i] - xs[j];
+      float yd = ys[i] - ys[j];
+      cnt += (xd * xd + yd * yd <= rsq);
+    }
+    dcounts[i] = cnt;
   }
 }
