@@ -21,7 +21,7 @@ static __device__ void countForPoint (
   for (size_t i = 0; i < n; ++i) {
     cnt += ( (xs[i] - x) * (xs[i] - x) + (ys[i] - y) * (ys[i] - y) <= rsq );
   }
-  dcounts[idx] = cnt;
+  dcounts[idx] = cnt - 1; // nobody is oneself's neighbour, so subtract 1
 }
 
 static __global__ void countNeighborsKernel (
@@ -84,6 +84,6 @@ void countNeighborsCpu(
       float yd = ys[i] - ys[j];
       cnt += (xd * xd + yd * yd <= rsq);
     }
-    dcounts[i] = cnt;
+    dcounts[i] = cnt - 1;
   }
 }

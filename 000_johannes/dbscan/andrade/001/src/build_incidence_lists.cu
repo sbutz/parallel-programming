@@ -17,7 +17,7 @@ static __device__ void buildIncidenceListForPoint (
   for (size_t i = 0; i < n; ++i) {
     float xd = xs[i] - x;
     float yd = ys[i] - y;
-    if (xd * xd + yd * yd <= rsq) {
+    if (xd * xd + yd * yd <= rsq && i != pointIdx) {
       listArray[currentListIdx] = i;
       ++currentListIdx;
     }
@@ -82,11 +82,10 @@ void buildIncidenceListsCpu(
     for (Count j = 0; j < n; ++j) {
       float xd = xs[i] - xs[j];
       float yd = ys[i] - ys[j];
-      if (xd * xd + yd * yd <= rsq) {
+      if (xd * xd + yd * yd <= rsq && i != j) {
         listArray[listArrayIdx++] = j;
       }
     }
   }
-
 }
 
