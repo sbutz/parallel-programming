@@ -1,5 +1,5 @@
 #ifndef CUDA_HELPERS_H_
-#define CUDA_HELPLERS_H_
+#define CUDA_HELPERS_H_
 
 #include <stdio.h>
 #include <cuda.h>

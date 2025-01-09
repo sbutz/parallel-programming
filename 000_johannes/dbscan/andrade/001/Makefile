@@ -19,7 +19,8 @@ NVIDIADIR=./nvidia
 
 all: $(OBJDIR)/andrade
 
-$(OBJDIR)/andrade: $(OBJDIR)/andrade.o $(OBJDIR)/dbscan.o $(OBJDIR)/accumulate.o
+$(OBJDIR)/andrade: $(OBJDIR)/andrade.o $(OBJDIR)/dbscan.o $(OBJDIR)/accumulate.o \
+$(OBJDIR)/build_incidence_lists.o
 	$(NVCC) $(GENCODE_FLAGS) -o $@ $(NVCC_LDFLAGS) $^
 
 $(OBJDIR)/andrade.o: $(SRCDIR)/andrade.cc $(SRCDIR)/read_input.h $(SRCDIR)/dbscan.h
@@ -27,6 +28,8 @@ $(OBJDIR)/andrade.o: $(SRCDIR)/andrade.cc $(SRCDIR)/read_input.h $(SRCDIR)/dbsca
 $(OBJDIR)/dbscan.o: $(SRCDIR)/dbscan.cu $(SRCDIR)/dbscan.h $(SRCDIR)/cuda_helpers.h
 
 $(OBJDIR)/accumulate.o: $(SRCDIR)/accumulate.cu $(SRCDIR)/accumulate.h $(SRCDIR)/cuda_helpers.h
+
+$(OBJDIR)/build_incidence_lists.o: $(SRCDIR)/build_incidence_lists.cu $(SRCDIR)/build_incidence_lists.h $(SRCDIR)/cuda_helpers.h
 
 $(OBJDIR)/%.o: $(SRCDIR)/%.cu
 	@mkdir -p $(OBJDIR)

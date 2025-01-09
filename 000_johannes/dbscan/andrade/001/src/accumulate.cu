@@ -49,17 +49,18 @@ std::size_t accumulateOnDevice(Count * ary, std::size_t n) {
 void accumulate(Count * dest, Count * src, std::size_t n) {
   Count * d_ary = nullptr;
 
-  CUDA_CHECK(cudaMalloc(&d_ary, 2 * n * sizeof(Count)));
-  CUDA_CHECK(cudaMemcpy(d_ary, src, n * sizeof(Count), cudaMemcpyHostToDevice));
-  auto s = accumulateOnDevice(d_ary, n);
-  CUDA_CHECK(cudaMemcpy(dest, &d_ary[s], n * sizeof(Count), cudaMemcpyDeviceToHost));
+  CUDA_CHECK(cudaMalloc(&d_ary, 2 * (n + 1) * sizeof(Count)));
+  CUDA_CHECK(cudaMemset(&d_ary[0], 0, sizeof(Count)));
+  CUDA_CHECK(cudaMemcpy(&d_ary[1], src, n * sizeof(Count), cudaMemcpyHostToDevice));
+  auto s = accumulateOnDevice(d_ary, n + 1);
+  CUDA_CHECK(cudaMemcpy(dest, &d_ary[s], (n + 1) * sizeof(Count), cudaMemcpyDeviceToHost));
   CUDA_CHECK(cudaFree(d_ary));
 }
 
 void accumulateCpu(Count * dest, Count * src, std::size_t n) {
+  dest[0] = 0;
   if (n == 0) return;
-  dest[0] = src[0];
-  for (std::size_t i = 1; i < n; ++i) {
-    dest[i] = src[i] + dest[i - 1];
+  for (std::size_t i = 1; i <= n; ++i) {
+    dest[i] = src[i - 1] + dest[i - 1];
   }
 }
