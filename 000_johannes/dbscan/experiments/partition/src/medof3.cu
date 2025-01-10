@@ -314,6 +314,4 @@ int main() {
   memcpy(&ary, &sampleValues, nSampleValues * sizeof(float));
   std::sort(std::begin(ary), std::end(ary));
   std::cout << ary[nSampleValues / 2] << '\n';
-
-
 }
