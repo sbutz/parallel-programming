@@ -5,6 +5,7 @@
 
 using Count = std::size_t;
 
+std::size_t accumulateOnDevice(Count * ary, std::size_t n);
 void accumulate(Count * dest, Count * src, std::size_t n);
 void accumulateCpu(Count * dest, Count * src, std::size_t n);
 #endif

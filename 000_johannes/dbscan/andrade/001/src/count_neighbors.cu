@@ -1,4 +1,4 @@
-#include "dbscan.h"
+#include "count_neighbors.h"
 
 #include "cuda_helpers.h"
 
@@ -10,7 +10,7 @@ using Count = size_t;
 static __device__ void countForPoint (
   Count * dcounts,
   std::size_t idx,
-  float * xs, float * ys, Count n,
+  float const * xs, float const * ys, Count n,
   float r
 ) {
   using size_t = std::size_t;
@@ -26,7 +26,7 @@ static __device__ void countForPoint (
 
 static __global__ void countNeighborsKernel (
   Count * dcounts,
-  float * xs, float * ys, Count n,
+  float const * xs, float const * ys, Count n,
   float r
 ) {
   using size_t = std::size_t;
@@ -43,13 +43,24 @@ static __global__ void countNeighborsKernel (
   }
 }
 
+void countNeighborsOnDevice(
+  Count * d_dcounts,
+  float const * d_xs, float const * d_ys, Count n,
+  float r
+) {
+  constexpr unsigned int nThreadsPerBlock = 256;
+
+  dim3 dimBlock(nThreadsPerBlock, 1, 1);
+  dim3 dimGrid((n + nThreadsPerBlock - 1) / nThreadsPerBlock, 1, 1);
+  countNeighborsKernel <<<dimGrid, dimBlock>>> (d_dcounts, d_xs, d_ys, n, r);
+	CUDA_CHECK(cudaGetLastError());
+}
+
 void countNeighbors(
   Count * dcounts,
   float * xs, float * ys, Count n,
   float r
 ) {
-  constexpr unsigned int nThreadsPerBlock = 256;
-
   float * d_xs = nullptr, * d_ys = nullptr;
   Count * d_dcounts = nullptr;
 
@@ -59,10 +70,7 @@ void countNeighbors(
   CUDA_CHECK(cudaMemcpy (d_xs, xs, n * sizeof(float), cudaMemcpyHostToDevice));
   CUDA_CHECK(cudaMemcpy (d_ys, ys, n * sizeof(float), cudaMemcpyHostToDevice));
 
-  dim3 dimBlock(nThreadsPerBlock, 1, 1);
-  dim3 dimGrid((n + nThreadsPerBlock - 1) / nThreadsPerBlock, 1, 1);
-  countNeighborsKernel <<<dimGrid, dimBlock>>> (d_dcounts, d_xs, d_ys, n, r);
-	CUDA_CHECK(cudaGetLastError());
+  countNeighborsOnDevice(d_dcounts, d_xs, d_ys, n, r);
 
   CUDA_CHECK(cudaMemcpy (dcounts, d_dcounts, n * sizeof(Count), cudaMemcpyDeviceToHost));
 

@@ -5,6 +5,8 @@
 #include <array>
 #include <vector>
 
+#include <iostream>
+
 struct UninitializedDeviceVectorTag {};
 
 template <typename T>
@@ -49,8 +51,8 @@ struct DeviceVector {
   T * data () { return d; }
   T const * data () const { return d; }
 
-  T & operator [] (std::size_t idx) & { return d[idx]; }
-  T const & operator [] (std::size_t idx) const & { return d[idx]; }
+//  T & operator [] (std::size_t idx) & { return d[idx]; }
+//  T const & operator [] (std::size_t idx) const & { return d[idx]; }
 
   void memcpyToHost (T * h) const {
     CUDA_CHECK(cudaMemcpy(h, d, n * sizeof(T), cudaMemcpyDeviceToHost));
