@@ -24,10 +24,10 @@ static __host__ __device__ void sort4(float & a, float & b, float & c, float & d
   else { c = tmp[3]; d = tmp[1]; }
 }
 
-static __global__ void kernel_medsOf3(float4 * values, std::size_t n4) {
-  std::size_t t1 = (n4 + 2u) / 3u;
-  std::size_t t0 = (n4 - t1 + 1u) / 2u;
-  std::size_t t2 = n4 - t0 - t1;
+static __global__ void kernel_medsOf3(float * values, std::size_t n) {
+  std::size_t t1 = (n + 2u) / 3u;
+  std::size_t t0 = (n - t1 + 1u) / 2u;
+  std::size_t t2 = n - t0 - t1;
 
   // now we have t1 >= t0 >= t2 and t0 + t1 + t2 = n4
 
@@ -41,14 +41,11 @@ static __global__ void kernel_medsOf3(float4 * values, std::size_t n4) {
 
   if (tid < t2) {
     // first case: three blocks
-    float4 a = values[tid];
-    float4 b = values[start1 + tid];
-    float4 c = values[start2 + tid];
+    float a = values[tid];
+    float b = values[start1 + tid];
+    float c = values[start2 + tid];
 
-    sort3(a.x, b.x, c.x);
-    sort3(a.y, b.y, c.y);
-    sort3(a.z, b.z, c.z);
-    sort3(a.w, b.w, c.w);
+    sort3(a, b, c);
 
     values[tid] = a;
     values[start1 + tid] = b;
@@ -56,41 +53,41 @@ static __global__ void kernel_medsOf3(float4 * values, std::size_t n4) {
   }
 }
 
-float * selectIth(float4 * d_values, std::size_t n4, std::size_t i);
+float * selectIth(float * d_values, std::size_t n, std::size_t i);
 
-float * medianOfMediansOfMedians (float4 * d_values, std::size_t n4) {
-  float4 * v;
-  std::size_t nn4, t0, t1, t2;
+float * medianOfMediansOfMedians (float * d_values, std::size_t n) {
+  float * v;
+  std::size_t nn, t0, t1, t2;
 
   v = d_values;
-  nn4 = n4;
+  nn = n;
 
-  t1 = (nn4 + 2u) / 3u;
-  t0 = (nn4 - t1 + 1u) / 2u;
-  t2 = nn4 - t0 - t1;
+  t1 = (nn + 2u) / 3u;
+  t0 = (nn - t1 + 1u) / 2u;
+  t2 = nn - t0 - t1;
 
   if (t2 != 0) {
 
     dim3 dimBlock(256);
     dim3 dimGrid(1024);
 
-    kernel_medsOf3<<<dimGrid,dimBlock>>> (v, nn4);
+    kernel_medsOf3<<<dimGrid,dimBlock>>> (v, nn);
 
     v += t0;
-    nn4 = t1;
-    t1 = (nn4 + 2u) / 3u;
-    t0 = (nn4 - t1 + 1u) / 2u;
-    t2 = nn4 - t0 - t1;
+    nn = t1;
+    t1 = (nn + 2u) / 3u;
+    t0 = (nn - t1 + 1u) / 2u;
+    t2 = nn - t0 - t1;
 
     if (t2 != 0) {
-      kernel_medsOf3<<<dimGrid,dimBlock>>> (v, nn4);
+      kernel_medsOf3<<<dimGrid,dimBlock>>> (v, nn);
     }
   }
 
   v += t0;
-  nn4 = t1;
+  nn = t1;
 
-  float * d_p = selectIth(v, nn4, 4 * nn4 / 2);
+  float * d_p = selectIth(v, nn, nn / 2);
   float pval;
   CUDA_CHECK(cudaMemcpy(&pval, d_p, sizeof(float), cudaMemcpyDeviceToHost));
   std::cerr << "Returning from mediansOfMediansOfMedians: " << pval << "\n";
@@ -101,7 +98,7 @@ float * partitionPivotCpu(float * s, float * e, float * pivotPtr);
 
 int run = 0;
 
-float * getIthFrom3(float4 * d_values, std::size_t n, std::size_t i) {
+float * getIthFrom3(float * d_values, std::size_t n, std::size_t i) {
   float ary[4];
   CUDA_CHECK(cudaMemcpy(&ary, d_values, n * sizeof(float), cudaMemcpyDeviceToHost));
   if (n == 1) {
@@ -117,35 +114,25 @@ float * getIthFrom3(float4 * d_values, std::size_t n, std::size_t i) {
   exit (1);
 }
 
-float * selectIth(float4 * d_values, std::size_t n4, std::size_t i) {
-  std::cerr << "selectIth called with 4 * n4 = " << 4 * n4 << ", i = " << i << "\n";
-  if (n4 == 1) {
-    float r[4];
-    CUDA_CHECK(cudaMemcpy(&r[0], d_values, sizeof(float4), cudaMemcpyDeviceToHost));
-    float tmp [] =  { r[0], r[1], r[2], r[3] };
-    sort4(tmp[0], tmp[1], tmp[2], tmp[3]);
-    std::cerr << tmp[0] << " " << tmp[1] << " " << tmp[2] << " " << tmp[3] << "\n";
-    std::cerr << r[0] << " " << r[1] << " " << r[2] << " " << r[3] << "\n";
-    std::cerr << "was here" << i << "\n";
-    float * retPtr;
-    for (std::size_t j = 0; j < 4; ++j) if (r[j] == tmp[i]) { retPtr = (float *)d_values + j; std::cerr << i << j << "\n"; break; }
-    std::cerr << "Returning from selectIth: " << r[retPtr - (float *)d_values] << "\n";
-    return retPtr;
+float * selectIth(float * d_values, std::size_t n, std::size_t i) {
+  std::cerr << "selectIth called with n = " << n << ", i = " << i << "\n";
+  if (n <= 3) {
+    return getIthFrom3(d_values, n, i);
   }
 
-  float * d_pivotPtr = medianOfMediansOfMedians(d_values, n4);
-  float * h_v; h_v = (float *)malloc(4 * n4 * sizeof(float));
-  CUDA_CHECK(cudaMemcpy(h_v, d_values, 4 * n4 * sizeof(float), cudaMemcpyDeviceToHost));
+  float * d_pivotPtr = medianOfMediansOfMedians(d_values, n);
+  float * h_v; h_v = (float *)malloc(n * sizeof(float));
+  CUDA_CHECK(cudaMemcpy(h_v, d_values, n * sizeof(float), cudaMemcpyDeviceToHost));
   float * h_pivotPtr = h_v + (d_pivotPtr - (float * )d_values); // ! change if d_values does not point to first element
   float pivot = *h_pivotPtr;
   std::cerr << "Pivot is " << pivot << "\n";
 
-  for (std::size_t j = 0; j < 4 * n4; ++j) std::cerr << h_v[j] << ", ";
+  for (std::size_t j = 0; j < n; ++j) std::cerr << h_v[j] << ", ";
   std::cerr << "*** \n";
 
-  float * p = partitionPivotCpu(h_v, h_v + 4 * n4, h_pivotPtr);
-  CUDA_CHECK(cudaMemcpy(d_values, h_v, 4 * n4 * sizeof(float), cudaMemcpyHostToDevice));
-  for (std::size_t j = 0; j < 4 * n4; ++j) std::cerr << h_v[j] << ", ";
+  float * p = partitionPivotCpu(h_v, h_v + n, h_pivotPtr);
+  CUDA_CHECK(cudaMemcpy(d_values, h_v, n * sizeof(float), cudaMemcpyHostToDevice));
+  for (std::size_t j = 0; j < n; ++j) std::cerr << h_v[j] << ", ";
   std::cerr << "*** \n";
 
   std::size_t dist = p - h_v;
@@ -159,16 +146,15 @@ float * selectIth(float4 * d_values, std::size_t n4, std::size_t i) {
     std::cerr << "(Found) Returning form selectIth: " << *p << "\n";
     return (float *)d_values + (p - h_v);
   } else if (dist > i) {
-    std::size_t n4Keep = (dist + 3) / 4;
-    if (n4Keep == 0) return getIthFrom3(d_values, dist, i);
-    float * retPtr = selectIth(d_values, n4Keep, i);
+    std::size_t nKeep = dist;
+    float * retPtr = selectIth(d_values, nKeep, i);
     float ret; CUDA_CHECK(cudaMemcpy(&ret, retPtr, sizeof(float), cudaMemcpyDeviceToHost));
     std::cerr << "Returning from selectIth: " << ret << "\n";
     return retPtr;
   } else {
-    std::size_t n4Cutoff = dist / 4;
-    if (n4Cutoff == 0) std::cerr << "INFINITE\n";
-    float * retPtr = selectIth(d_values + n4Cutoff, n4 - n4Cutoff, i - 4 * n4Cutoff);
+    std::size_t nCutoff = dist + 1;
+    if (nCutoff == 0) std::cerr << "INFINITE\n";
+    float * retPtr = selectIth(d_values + nCutoff, n - nCutoff, i - nCutoff);
     float ret; CUDA_CHECK(cudaMemcpy(&ret, retPtr, sizeof(float), cudaMemcpyDeviceToHost));
     std::cerr << "Returning from selectIth: " << ret << "\n";
     return retPtr;
@@ -333,10 +319,10 @@ constexpr float sampleValues [] = {
 constexpr std::size_t nSampleValues = getArraySize(sampleValues);
 
 int main() {
-  float4 * d_values = nullptr;
-  CUDA_CHECK(cudaMalloc(&d_values, (nSampleValues + 3) / 4 * sizeof(float4)));
+  float * d_values = nullptr;
+  CUDA_CHECK(cudaMalloc(&d_values, nSampleValues * sizeof(float4)));
   CUDA_CHECK(cudaMemcpy(d_values, sampleValues, nSampleValues * sizeof(float), cudaMemcpyHostToDevice));
-  float * d_ptr = selectIth(d_values, (nSampleValues + 3) / 4, nSampleValues / 2);
+  float * d_ptr = selectIth(d_values, nSampleValues, nSampleValues / 2);
   float v;
   CUDA_CHECK(cudaMemcpy(&v, d_ptr, sizeof(float), cudaMemcpyDeviceToHost));
   std::cout << v<< '\n';
