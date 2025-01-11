@@ -3,6 +3,9 @@
 #include <cuda.h>
 #include <iostream>
 #include <algorithm>
+#include <vector>
+
+static constexpr unsigned int minWarpSize = 32;
 
 static __host__ __device__ void sort3(float & a, float & b, float & c) {
   float tmp;
@@ -34,7 +37,7 @@ static __global__ void kernel_medsOf3(float * values, std::size_t n) {
   std::size_t start1 = t0;
   std::size_t start2 = start1 + t1;
 
-
+  // TODO: Missing: Handling stride.
   using size_t = std::size_t;
   unsigned int tid = blockIdx.x * blockDim.x + threadIdx.x;
   unsigned int stride = blockDim.x * gridDim.x;
@@ -94,9 +97,92 @@ float * medianOfMediansOfMedians (float * d_values, std::size_t n) {
   return d_p;
 }
 
+
 float * partitionPivotCpu(float * s, float * e, float * pivotPtr);
 
-int run = 0;
+template <typename T>
+static __device__ void d_sumShared(T * sValues1, T * sValues2, unsigned int n) {
+  unsigned int const tidInBlock = threadIdx.x;
+  unsigned int const wid = threadIdx.x / warpSize;
+
+  unsigned int nWarpsRequired = (n + warpSize - 1) / warpSize;
+  if (wid < nWarpsRequired) {
+    for (;;) {
+      T sum1 = tidInBlock < n ? sValues1[tidInBlock] : T{};
+      T sum2 = tidInBlock < n ? sValues2[tidInBlock] : T{};
+      for (auto w = warpSize / 2; w != 0; w /= 2) {
+        sum1 += __shfl_down_sync(0xffffffff, sum1, w);
+        sum2 += __shfl_down_sync(0xffffffff, sum2, w);
+      }
+
+      __syncwarp();
+
+      if (!(tidInBlock % warpSize)) {
+        sValues1[wid] = sum1;
+        sValues2[wid] = sum2;
+      }
+
+      n = (n + warpSize - 1) / warpSize;
+      if (n == 1) break;
+
+      nWarpsRequired = (n + warpSize - 1) / warpSize;
+      if (wid >= nWarpsRequired) break;
+
+      __syncthreads();
+    }
+  }
+}
+
+static __global__ void kernel_countLowerUpper(
+  std::size_t * lower, std::size_t * upper, unsigned int nBlocks,
+  float * values, std::size_t n, float pivot
+) {
+  using size_t = std::size_t;
+  unsigned int tid = blockIdx.x * blockDim.x + threadIdx.x;
+  unsigned int stride = blockDim.x * gridDim.x;
+  unsigned int wid = threadIdx.x / warpSize;  // index of current warp in current block
+  unsigned int lane = threadIdx.x % warpSize; // index of current thread in current warp
+
+  unsigned int const warpsPerBlock = blockDim.x / warpSize;
+  extern __shared__ unsigned int sLowerUpper [];
+  unsigned int * sLower = sLowerUpper, * sUpper = &sLowerUpper[warpsPerBlock];
+
+  size_t s = 0;
+  unsigned int cntLower = 0, cntUpper = 0;
+  if (n > stride) {
+    for (; s < n - stride; s += stride) {
+      float v = values[s + tid];
+      cntLower += (v < pivot);
+      cntUpper += (v > pivot);
+    }
+  }
+  if (tid < n - s) {
+    float v = values[s + tid];
+    cntLower += v < pivot;
+    cntUpper += v > pivot;
+  }
+  __syncwarp();
+
+  unsigned int sumLower = cntLower, sumUpper = cntUpper;
+  for (auto w = warpSize / 2; w != 0; w /= 2) {
+    sumLower += __shfl_down_sync(0xffffffff, sumLower, w);
+    sumUpper += __shfl_down_sync(0xffffffff, sumUpper, w);
+  }
+
+  if (lane == 0) {
+    sLower[wid] = sumLower;
+    sUpper[wid] = sumUpper;
+  }
+  __syncthreads();
+
+  d_sumShared(sLower, sUpper, warpsPerBlock);
+
+  if (threadIdx.x == 0) {
+    lower[blockIdx.x] = sLower[0];
+    upper[blockIdx.x] = sUpper[0];
+  }
+}
+
 
 float * getIthFrom3(float * d_values, std::size_t n, std::size_t i) {
   float ary[4];
@@ -114,12 +200,14 @@ float * getIthFrom3(float * d_values, std::size_t n, std::size_t i) {
   exit (1);
 }
 
+int run = 0;
+
 float * selectIth(float * d_values, std::size_t n, std::size_t i) {
   std::cerr << "selectIth called with n = " << n << ", i = " << i << "\n";
   if (n <= 3) {
     return getIthFrom3(d_values, n, i);
   }
-
+  
   float * d_pivotPtr = medianOfMediansOfMedians(d_values, n);
   float * h_v; h_v = (float *)malloc(n * sizeof(float));
   CUDA_CHECK(cudaMemcpy(h_v, d_values, n * sizeof(float), cudaMemcpyDeviceToHost));
@@ -129,6 +217,23 @@ float * selectIth(float * d_values, std::size_t n, std::size_t i) {
 
   for (std::size_t j = 0; j < n; ++j) std::cerr << h_v[j] << ", ";
   std::cerr << "*** \n";
+
+  dim3 dimBlock(256);
+  dim3 dimGrid(1024);
+
+  std::size_t * d_lower, * d_upper;
+  CUDA_CHECK(cudaMalloc(&d_lower, 1024 * sizeof(std::size_t)));
+  CUDA_CHECK(cudaMalloc(&d_upper, 1024 * sizeof(std::size_t)));
+  kernel_countLowerUpper<<<dimGrid, dimBlock, 2 * dimBlock.x / minWarpSize * sizeof(unsigned int)>>> (
+    d_lower, d_upper, 1024, d_values, n, pivot
+  );
+  CUDA_CHECK(cudaGetLastError());
+  std::size_t lower[1024], upper[1024];
+  CUDA_CHECK(cudaMemcpy(lower, d_lower, 1024 * sizeof(std::size_t), cudaMemcpyDeviceToHost));
+  CUDA_CHECK(cudaMemcpy(upper, d_upper, 1024 * sizeof(std::size_t), cudaMemcpyDeviceToHost));
+  std::cerr << "n = " << n << "\n";
+  std::cerr << "Lower: "; for (auto v : lower) std::cerr << v << " "; std::cerr << "\n";
+  std::cerr << "Upper: "; for (auto v : upper) std::cerr << v << " "; std::cerr << "\n";
 
   float * p = partitionPivotCpu(h_v, h_v + n, h_pivotPtr);
   CUDA_CHECK(cudaMemcpy(d_values, h_v, n * sizeof(float), cudaMemcpyHostToDevice));
