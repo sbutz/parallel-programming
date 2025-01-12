@@ -4,9 +4,25 @@
 #include <cuda.h>
 #include <cooperative_groups.h>
 
-template <std::size_t logStep = 0, int cWarpSize = 32, int cWarpsPerBlock = 256 / 32>
+// return ceil(a / b) without overflow issues
+constexpr __host__ __device__ __forceinline__ std::size_t ceilDiv(std::size_t a, std::size_t b) {
+  return (a / b) + ((a / b) * b > 0);
+}
+
+// return result of ceil(a / b) < c without overflow issues
+constexpr __host__ __device__ __forceinline__ bool ceilDivLt(std::size_t a, std::size_t b, std::size_t c) {
+  return (a - 1) / b + 1 < c;
+}
+
+// return result of a < ceil(b / c) without overflow issues
+constexpr __host__ __device__ __forceinline__ bool ltCeilDiv(std::size_t a, std::size_t b, std::size_t c) {
+  return (b != 0) && (b - 1) / c >= a;
+}
+
+template <int cWarpSize = 32, int cWarpsPerBlock = 256 / 32>
 __device__ void scanSingleStrideStep(
   float * dest, std::size_t n, 
+  std::size_t step,
   float * sTemp,
   float * values
 ) {
@@ -25,8 +41,8 @@ __device__ void scanSingleStrideStep(
   using MaskType = unsigned int;
   static_assert(8 * sizeof(MaskType) == cWarpSize, "");
 
-  if (warpInGrid <= (n - 1) / cWarpSize) {
-    auto v = (tid << logStep) < n ? values[tid << logStep] : 0;
+  if (ltCeilDiv(warpInGrid, n, cWarpSize)) {
+    auto v = tid < n ? values[tid * step + (step - 1)] : 0;
 
     __syncwarp();
 
@@ -39,7 +55,7 @@ __device__ void scanSingleStrideStep(
 
     __syncthreads();
 
-    if (wid == 0) {
+    if (blockIdx.x < n / cBlockSize && wid == 0) {
       v = threadIdx.x < cWarpsPerBlock ? sTemp[threadIdx.x] : 0;
       
       for (int w = 1; w < cWarpsPerBlock; w <<= 1) {
@@ -51,7 +67,7 @@ __device__ void scanSingleStrideStep(
       sTemp[threadIdx.x] = v;
 
       if (threadIdx.x == cWarpsPerBlock - 1) {
-        dest[(cBlockSize * (blockIdx.x + 1) - 1) << logStep] = v;
+        dest[cBlockSize * (blockIdx.x + 1) * step - 1] = v;
       }
     }
 
@@ -59,22 +75,29 @@ __device__ void scanSingleStrideStep(
   }
 }
 
-template <int cWarpSize = 32, int cWarpsPerBlock = 256 / 32, std::size_t... logSteps>
+template <int cWarpSize = 32, int cWarpsPerBlock = 256 / 32>
 __forceinline__ __device__ void scanSingleStrideSteps(
   float * dest, std::size_t n, 
   float * sTemp,
-  float * values,
-  std::index_sequence<logSteps...>
+  float * values
 ) {
-  auto grid = cooperative_groups::this_grid();
+  constexpr unsigned int cBlockSize = cWarpSize * cWarpsPerBlock;
 
-  scanSingleStrideStep<0>(dest, n, sTemp, values);
+  std::size_t step = 1;
+  std::size_t nn = n;
+  float * currentSTemp = sTemp;
+  for (;;) {
+    scanSingleStrideStep(dest, nn, step, sTemp, values);
 
-  grid.sync();
-  
-  (void) std::initializer_list<int>{ 
-    ((void)scanSingleStrideStep<logSteps>(dest, n, sTemp, dest), 0) ...
-  };
+    if (nn / step == 0) break;
+    step *= cBlockSize;
+    nn /= step;
+    currentSTemp += cWarpsPerBlock;
+    //if (blockIdx.x == 0 && threadIdx.x == 0) printf("Step is %lu\n", step);
+
+    auto grid = cooperative_groups::this_grid();
+    grid.sync();
+  }
 }
 
 // assumption: n > 0
@@ -95,7 +118,7 @@ __global__ void kernel_scan(float * dest, std::size_t n, float * values) {
   unsigned int const lane = threadIdx.x % cWarpSize;
 
   // adjust dimension
-  __shared__ float temp[cWarpsPerBlock]; 
+  extern __shared__ float temp[]; 
 
   using MaskType = unsigned int;
 
@@ -103,24 +126,21 @@ __global__ void kernel_scan(float * dest, std::size_t n, float * values) {
   if (n > stride) {
     for (; s < n - stride; s += stride) {
       scanSingleStrideSteps(
-        dest + s, stride, temp, values + s,
-        std::index_sequence<7> {}
+        dest + s, stride, temp, values + s
       );
     }
   }
   if (n - s > 0)  {
     scanSingleStrideSteps(
-      dest + s, n - s, temp, values + s,
-      std::index_sequence<7> {}
+      dest + s, n - s, temp, values + s
     );
   }
 }
 
 constexpr int cWarpSize = 32;
-constexpr int cWarpsPerBlock = 4;
-constexpr int cBlocksPerGrid = 32;
-constexpr int cStrideSize = cWarpSize * cWarpsPerBlock * cBlocksPerGrid;
-constexpr std::size_t nSampleData = cStrideSize;
+constexpr int cWarpsPerBlock = 8;
+constexpr int cBlockSize = cWarpSize * cWarpsPerBlock;
+constexpr std::size_t nSampleData = 5 * cBlockSize * cBlockSize;
 
 std::array<float, nSampleData> sampleData;
 std::array<float, nSampleData> result;
@@ -144,10 +164,21 @@ int main() {
   auto a2 = nSampleData;
   auto a3 = d_data.data();
   void * kernelArgs [] = { (void *)&a1, (void *)&a2, (void *)&a3 };
+
+  std::size_t stride = numBlocksPerSm * cWarpSize * cWarpsPerBlock;
+  std::cerr << "Stride: " << stride << "\n";
+
+  // calculate the amount of shared memory we will need
+  std::size_t nSharedFloats = 0;
+  for (std::size_t n = stride, step = 1; n != 0; n /= (step *= cBlockSize)) {
+    nSharedFloats += cWarpsPerBlock;
+  }
+
+  std::cerr << "nSharedFloats: " << nSharedFloats << " (= cWarpsPerBlock * " << nSharedFloats / cWarpsPerBlock << ")\n";
   cudaLaunchCooperativeKernel(
     (void *)kernel_scan<cWarpSize, cWarpsPerBlock>,
-    dim3{cBlocksPerGrid}, dim3{cWarpSize * cWarpsPerBlock},
-    kernelArgs
+    dim3{numBlocksPerSm}, dim3{cWarpSize * cWarpsPerBlock},
+    kernelArgs, nSharedFloats * sizeof(float)
   );
   CUDA_CHECK(cudaGetLastError());
 
@@ -159,7 +190,7 @@ int main() {
     //if (!(i % cBlockSize)) s = 0; 
     s += sampleData[i]; cpuResult[i] = s;
   }
-  for (auto i : { 1, 2, 3, 4 }) std::cerr << i * cBlockSize - 1 << " " << result[i * cBlockSize - 1] << " " <<
+  for (auto i : { 1, 2, 3, 4, cBlockSize }) std::cerr << i * cBlockSize - 1 << " " << result[i * cBlockSize - 1] << " " <<
     cpuResult[i * cBlockSize - 1] << '\n';
   return 0;
 }
