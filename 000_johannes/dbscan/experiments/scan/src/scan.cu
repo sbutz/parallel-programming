@@ -111,6 +111,7 @@ __device__ void scanSingleStrideFillinStep(
     }
     __syncwarp();
 
+    // TODO: Synchronization probably not correct. Reading and writing to dest should be done by the same block.
     if (tid < n) dest[tid * step] = basePrevious + baseFromShared + v;
     __syncthreads();
   }
