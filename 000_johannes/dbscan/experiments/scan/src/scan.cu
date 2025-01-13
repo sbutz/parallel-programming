@@ -57,8 +57,10 @@ __device__ float sumToLastOfWarpSync(float v) {
   return v;
 }
 
+// Thread cWarpsPerBlock - 1 returns the block sum, the other
+//   threads return an undefined value
 template <int cWarpSize = 32, int cWarpsPerBlock = 256 / 32>
-__device__ void scanSingleStrideStep(
+__device__ float scanSingleStrideStep(
   float * dest, std::size_t n, 
   std::size_t step,
   std::size_t nWriteable,
@@ -78,6 +80,8 @@ __device__ void scanSingleStrideStep(
   unsigned int const warpInGrid = tid / cWarpSize;
 
   auto nAct = n / step;
+
+  float returnValue = 0;
 
   if (ltCeilDiv(warpInGrid, nAct, cWarpSize)) {
     // We calculate the sum for each warp and store these sums in shared memory.
@@ -106,13 +110,10 @@ __device__ void scanSingleStrideStep(
 
       sTemp[threadIdx.x] = v;
 
-      if (threadIdx.x == cWarpsPerBlock - 1) {
-        auto targetIdx = cBlockSize * (blockIdx.x + 1) * step;
-        dest[targetIdx - 1] = v;
-      }
+      returnValue = v;
     }
 
-    __syncthreads();
+    return returnValue;
   }
 }
 
@@ -164,15 +165,39 @@ __forceinline__ __device__ void scanSingleStrideSteps(
   float * values
 ) {
   constexpr unsigned int cBlockSize = cWarpSize * cWarpsPerBlock;
+  unsigned int const tid = cBlockSize * blockIdx.x + threadIdx.x;
 
   std::size_t step = 1;
   std::size_t nn = n;
   float * currentSTemp = sTemp;
   float * vs = values;
+
+  float startForNextBlock = scanSingleStrideStep(dest, n, step, nWriteable, currentSTemp, values);
+
+  if (tid == 0) dest[0] = 0;
+  if (n > cBlockSize * step && blockIdx.x * cBlockSize * step < n - cBlockSize * step)
+    dest[cBlockSize * step * (blockIdx.x + 1) - 1] = startForNextBlock;
+
+  auto grid = cooperative_groups::this_grid();
+  grid.sync();
+
+  step *= cBlockSize;
+  nn /= step;
+  currentSTemp += cWarpsPerBlock;
+  vs = dest;
+
   for (;;) {
-    scanSingleStrideStep(dest, n, step, nWriteable, currentSTemp, vs);
+    float startForNextBlock = scanSingleStrideStep(dest, n, step, nWriteable, currentSTemp, dest);
+
     auto grid = cooperative_groups::this_grid();
     grid.sync();
+
+    if (tid == 0) dest[0] = 0;
+    if (n > cBlockSize * step && blockIdx.x * cBlockSize * step < n - cBlockSize * step)
+      dest[cBlockSize * step * (blockIdx.x + 1) - 1] = startForNextBlock;
+
+    grid.sync();
+
 
     if (nn / step == 0) break;
     step *= cBlockSize;
