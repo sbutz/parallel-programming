@@ -19,10 +19,49 @@ constexpr __host__ __device__ __forceinline__ bool ltCeilDiv(std::size_t a, std:
   return (b != 0) && (b - 1) / c >= a;
 }
 
+template <int cWarpSize = 32, int nLanes = cWarpSize>
+constexpr __host__ __device__ unsigned int getMask() {
+  using MaskType = unsigned int;
+  // slightly complicated to avoid "shift count is too large" warning
+  return (nLanes == cWarpSize ? MaskType{0} : MaskType{1u << nLanes}) - MaskType{1};
+}
+
+// The function will perform the necessary synchronization itself.
+template <int cWarpSize = 32, int nLanes = cWarpSize>
+__device__ float scanPerWarpSync(float v) {
+  using MaskType = unsigned int;
+
+  static_assert(nLanes <= cWarpSize, "");
+  static_assert(8 * sizeof(MaskType) == cWarpSize, "");
+
+  MaskType constexpr mask = getMask<cWarpSize, nLanes> ();
+
+  unsigned int const lane = threadIdx.x % cWarpSize;
+  for (int w = 1; w < nLanes; w <<= 1) {
+    float x = __shfl_up_sync(mask, v, w);
+    if (lane >= w) v += x;
+  }
+  return v;
+}
+
+// The function will perform the necessary synchronization itself.
+template <int cWarpSize = 32>
+__device__ float sumToLastOfWarpSync(float v) {
+  using MaskType = unsigned int;
+
+  static_assert(8 * sizeof(MaskType) == cWarpSize, "");
+
+  MaskType constexpr mask = MaskType{0} - MaskType{1};
+
+  for (int w = 1; w < cWarpSize; w <<= 1) v += __shfl_up_sync(mask, v, w);
+  return v;
+}
+
 template <int cWarpSize = 32, int cWarpsPerBlock = 256 / 32>
 __device__ void scanSingleStrideStep(
   float * dest, std::size_t n, 
   std::size_t step,
+  std::size_t nWriteable,
   float * sTemp,
   float * values
 ) {
@@ -38,37 +77,38 @@ __device__ void scanSingleStrideStep(
   unsigned int const lane = threadIdx.x % cWarpSize;
   unsigned int const warpInGrid = tid / cWarpSize;
 
-  using MaskType = unsigned int;
-  static_assert(8 * sizeof(MaskType) == cWarpSize, "");
+  auto nAct = n / step;
 
-  if (ltCeilDiv(warpInGrid, n, cWarpSize)) {
-    auto v = tid < n ? values[tid * step + (step - 1)] : 0;
+  if (ltCeilDiv(warpInGrid, nAct, cWarpSize)) {
+    // We calculate the sum for each warp and store these sums in shared memory.
+    {
+      auto v = tid < nAct ? values[tid * step + (step - 1)] : 0;
 
-    __syncwarp();
-
-    auto const mask = MaskType{} - 1u;
-    for (int w = 1; w != cWarpSize; w <<= 1) {
-      float x = __shfl_up_sync(mask, v, w);
-      if (lane >= w) v += x; 
+      v = sumToLastOfWarpSync(v);
+      if (lane == cWarpSize - 1) sTemp[wid] = v;
     }
-
-    if (lane == cWarpSize - 1) sTemp[wid] = v;
 
     __syncthreads();
 
-    if (blockIdx.x < n / cBlockSize && wid == 0) {
-      v = threadIdx.x < cWarpsPerBlock ? sTemp[threadIdx.x] : 0;
-      __syncwarp();
+    // Now we have the sums per warp in shared memory.
+    // We perform a scan over the shared memory, in order to get
+    //   accumulated warpwise sums in shared memory.
+    // The scan is performed by the first warp.
+    if (threadIdx.x < cWarpsPerBlock) {
+      static_assert(cWarpsPerBlock <= cWarpSize,
+        "This code is only correct if the per-warp sums within a block "
+        "can be scanned by a single warp."
+      );
 
-      for (int w = 1; w < cWarpsPerBlock; w <<= 1) {
-        float x = __shfl_up_sync(mask, v, w);
-        if (lane >= w) v += x;
-      }
+      float v = sTemp[threadIdx.x];
+      
+      v = scanPerWarpSync<cWarpSize, cWarpsPerBlock> (v);
 
-      if (threadIdx.x < cWarpsPerBlock) sTemp[threadIdx.x] = v;
+      sTemp[threadIdx.x] = v;
 
       if (threadIdx.x == cWarpsPerBlock - 1) {
-        dest[cBlockSize * (blockIdx.x + 1) * step - 1] = v;
+        auto targetIdx = cBlockSize * (blockIdx.x + 1) * step;
+        dest[targetIdx - 1] = v;
       }
     }
 
@@ -80,6 +120,7 @@ template <int cWarpSize = 32, int cWarpsPerBlock = 256 / 32>
 __device__ void scanSingleStrideFillinStep(
   float * dest, std::size_t n, 
   std::size_t step,
+  bool firstStride,
   float * sTemp,
   float * values
 ) {
@@ -98,21 +139,18 @@ __device__ void scanSingleStrideFillinStep(
   using MaskType = unsigned int;
   static_assert(8 * sizeof(MaskType) == cWarpSize, "");
 
-  if (ltCeilDiv(warpInGrid, n, cWarpSize)) {
+  auto nAct = n / step;
+
+  if (ltCeilDiv(warpInGrid, nAct, cWarpSize)) {
+    auto basePreviousStride = (!firstStride && step == 1) ? dest[0] : 0;
     auto basePrevious = blockIdx.x != 0 ? dest[blockIdx.x * cBlockSize * step - 1] : 0;
     auto baseFromShared = threadIdx.x >= cWarpSize ? sTemp[threadIdx.x / cWarpSize - 1] : 0;
-    auto v = tid < n ? values[tid * step] : 0;
-    __syncwarp();
+    auto v = tid < nAct ? values[tid * step] : 0;
 
-    auto const mask = MaskType{} - 1u;
-    for (int w = 1; w < cWarpSize; w <<= 1) {
-      float x = __shfl_up_sync(mask, v, w);
-      if (lane >= w) v += x;
-    }
-    __syncwarp();
+    v = scanPerWarpSync(v);
 
     // TODO: Synchronization probably not correct. Reading and writing to dest should be done by the same block.
-    if (tid < n) dest[tid * step] = basePrevious + baseFromShared + v;
+    if (tid < n + (!firstStride && step == 1)) dest[tid * step] = basePreviousStride + basePrevious + baseFromShared + v;
     __syncthreads();
   }
 }
@@ -120,7 +158,8 @@ __device__ void scanSingleStrideFillinStep(
 
 template <int cWarpSize = 32, int cWarpsPerBlock = 256 / 32>
 __forceinline__ __device__ void scanSingleStrideSteps(
-  float * dest, std::size_t n, 
+  float * dest, std::size_t n, std::size_t nWriteable,
+  bool firstStride,
   float * sTemp,
   float * values
 ) {
@@ -131,7 +170,7 @@ __forceinline__ __device__ void scanSingleStrideSteps(
   float * currentSTemp = sTemp;
   float * vs = values;
   for (;;) {
-    scanSingleStrideStep(dest, nn, step, currentSTemp, vs);
+    scanSingleStrideStep(dest, n, step, nWriteable, currentSTemp, vs);
     auto grid = cooperative_groups::this_grid();
     grid.sync();
 
@@ -145,7 +184,7 @@ __forceinline__ __device__ void scanSingleStrideSteps(
   for (;;) {
     nn = n / step;
     if (blockIdx.x == 0 && threadIdx.x == 0) printf("Step is %lu\n", step);
-    scanSingleStrideFillinStep(dest, nn, step, currentSTemp, values);
+    scanSingleStrideFillinStep(dest, n, step, firstStride, currentSTemp, values);
     auto grid = cooperative_groups::this_grid();
     grid.sync();
 
@@ -177,17 +216,19 @@ __global__ void kernel_scan(float * dest, std::size_t n, float * values) {
 
   using MaskType = unsigned int;
 
+  bool firstStride = true;
   std::size_t s = 0;
   if (n > stride) {
     for (; s < n - stride; s += stride) {
       scanSingleStrideSteps(
-        dest + s, stride, temp, values + s
+        dest + s, stride, n, firstStride, temp, values + s
       );
+      firstStride = false;
     }
   }
   if (n - s > 0)  {
     scanSingleStrideSteps(
-      dest + s, n - s, temp, values + s
+      dest + s, n - s, n, firstStride, temp, values + s
     );
   }
 }
