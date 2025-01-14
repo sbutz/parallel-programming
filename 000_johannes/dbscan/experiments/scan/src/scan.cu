@@ -19,7 +19,7 @@ constexpr __host__ __device__ __forceinline__ bool ltCeilDiv(std::size_t a, std:
   return (b != 0) && (b - 1) / c >= a;
 }
 
-template <int cWarpSize = 32, int nLanes = cWarpSize>
+template <int cWarpSize, int nLanes = cWarpSize>
 constexpr __host__ __device__ unsigned int getMask() {
   using MaskType = unsigned int;
   // slightly complicated to avoid "shift count is too large" warning
@@ -27,7 +27,7 @@ constexpr __host__ __device__ unsigned int getMask() {
 }
 
 // The function will perform the necessary synchronization itself.
-template <int cWarpSize = 32, int nLanes = cWarpSize>
+template <int cWarpSize, int nLanes = cWarpSize>
 __device__ float scanPerWarpSync(float v) {
   using MaskType = unsigned int;
 
@@ -45,7 +45,7 @@ __device__ float scanPerWarpSync(float v) {
 }
 
 // The function will perform the necessary synchronization itself.
-template <int cWarpSize = 32>
+template <int cWarpSize>
 __device__ float sumToLastOfWarpSync(float v) {
   using MaskType = unsigned int;
 
@@ -59,66 +59,90 @@ __device__ float sumToLastOfWarpSync(float v) {
 
 // Thread cWarpsPerBlock - 1 returns the block sum, the other
 //   threads return an undefined value
-template <int cWarpSize = 32, int cWarpsPerBlock = 256 / 32>
-__device__ float scanSingleStrideStep(
-  std::size_t n, 
-  std::size_t step,
-  float * sTemp,
-  float * values
-) {
-  // assert: warpSize == cWarpSize
-  // assert: blockDim.x = cWarpSize * cWarpsPerBlock
-  static_assert(cWarpsPerBlock <= cWarpSize, "");
+// block idx will handle values[step * blockDim.x * idx ... step * (blockDim.x * idx + blockDim.x - 1)]
+template <int cWarpSize, int cWarpsPerBlock>
+struct BlockwiseScan {
+  static constexpr std::size_t cBlockSize = cWarpSize * cWarpsPerBlock;
 
-  constexpr unsigned int cBlockSize = cWarpSize * cWarpsPerBlock;
+  std::size_t n;
+  std::size_t step;
 
-  unsigned int const tid = cBlockSize * blockIdx.x + threadIdx.x;
-  unsigned int const stride = gridDim.x * blockDim.x;
-  unsigned int const wid = threadIdx.x / cWarpSize;
-  unsigned int const lane = threadIdx.x % cWarpSize;
-  unsigned int const warpInGrid = tid / cWarpSize;
+  constexpr __host__ __device__ BlockwiseScan(std::size_t n, std::size_t step) : n(n), step(step) {}
 
-  float returnValue = 0;
-
-  if (ltCeilDiv(warpInGrid, n, cWarpSize)) {
-    // We calculate the sum for each warp and store these sums in shared memory.
-    {
-      auto v = tid < n ? values[tid * step] : 0;
-
-      v = sumToLastOfWarpSync(v);
-      if (lane == cWarpSize - 1) sTemp[wid] = v;
-    }
-
-    __syncthreads();
-
-    // Now we have the sums per warp in shared memory.
-    // We perform a scan over the shared memory, in order to get
-    //   accumulated warpwise sums in shared memory.
-    // The scan is performed by the first warp.
-    if (threadIdx.x < cWarpsPerBlock) {
-      static_assert(cWarpsPerBlock <= cWarpSize,
-        "This code is only correct if the per-warp sums within a block "
-        "can be scanned by a single warp."
-      );
-
-      float v = sTemp[threadIdx.x];
-      
-      v = scanPerWarpSync<cWarpSize, cWarpsPerBlock> (v);
-
-      sTemp[threadIdx.x] = v;
-
-      returnValue = v;
-    }
-
-    return returnValue;
+  constexpr __host__ __device__ bool blockDoesParticipate(unsigned int blockIndex) {
+    return (n - 1) / cBlockSize > blockIndex;
   }
-}
 
-template <int cWarpSize = 32, int cWarpsPerBlock = 256 / 32>
+  constexpr __host__ __device__ std::size_t getLastScannedIndex(unsigned int blockIndex) {
+    if ((n - 1) / cBlockSize <= blockIndex + 1) return n - 1;
+    return step * (cBlockSize * blockIndex + cBlockSize - 1);
+  }
+
+  __device__ float scan (
+    float * sTemp,
+    float * values
+  ) {
+    // assert: warpSize == cWarpSize
+    // assert: blockDim.x = cWarpSize * cWarpsPerBlock
+    static_assert(cWarpsPerBlock <= cWarpSize, "");
+
+    constexpr unsigned int cBlockSize = cWarpSize * cWarpsPerBlock;
+
+    unsigned int const tid = cBlockSize * blockIdx.x + threadIdx.x;
+    unsigned int const stride = gridDim.x * blockDim.x;
+    unsigned int const wid = threadIdx.x / cWarpSize;
+    unsigned int const lane = threadIdx.x % cWarpSize;
+    unsigned int const warpInGrid = tid / cWarpSize;
+
+    float returnValue = 0;
+
+    if (ltCeilDiv(warpInGrid, n, cWarpSize)) {
+      // We calculate the sum for each warp and store these sums in shared memory.
+      {
+        auto v = tid < n ? values[tid * step] : 0;
+
+        v = sumToLastOfWarpSync<cWarpSize>(v);
+        if (lane == cWarpSize - 1) sTemp[wid] = v;
+      }
+
+      __syncthreads();
+
+      // Now we have the sums per warp in shared memory.
+      // We perform a scan over the shared memory, in order to get
+      //   accumulated warpwise sums in shared memory.
+      // The scan is performed by the first warp.
+      if (threadIdx.x < cWarpsPerBlock) {
+        static_assert(cWarpsPerBlock <= cWarpSize,
+          "This code is only correct if the per-warp sums within a block "
+          "can be scanned by a single warp."
+        );
+
+        float v = sTemp[threadIdx.x];
+        
+        v = scanPerWarpSync<cWarpSize, cWarpsPerBlock> (v);
+
+        sTemp[threadIdx.x] = v;
+
+        returnValue = v;
+      }
+
+      return returnValue;
+    }
+  }
+};
+
+static_assert(BlockwiseScan<32, 2>{700, 1}.getLastScannedIndex(0) == 63, "");
+static_assert(BlockwiseScan<32, 2>{700, 1}.getLastScannedIndex(1) == 127, "");
+static_assert(BlockwiseScan<32, 2>{700, 4}.getLastScannedIndex(1) == 508, "");
+static_assert(BlockwiseScan<32, 4>{700, 1}.getLastScannedIndex(0) == 127, "");
+static_assert(BlockwiseScan<32, 1>{700, 32}.blockDoesParticipate(0), "");
+
+template <int cWarpSize, int cWarpsPerBlock>
 __device__ void scanSingleStrideFillinStep(
   float * dest, std::size_t n, 
   std::size_t step,
   float * sTemp,
+  float blockBaseValue,
   float * values
 ) {
   // assert: warpSize == cWarpSize
@@ -136,25 +160,20 @@ __device__ void scanSingleStrideFillinStep(
   using MaskType = unsigned int;
   static_assert(8 * sizeof(MaskType) == cWarpSize, "");
 
-  auto nAct = n / step;
+  if (ltCeilDiv(warpInGrid, n, cWarpSize)) {
+    auto warpBaseValue = threadIdx.x >= cWarpSize ? sTemp[threadIdx.x / cWarpSize - 1] : 0;
+    auto v = tid < n ? values[tid * step] : 0;
 
-  if (ltCeilDiv(warpInGrid, nAct, cWarpSize)) {
-    auto basePreviousStride = dest[0];
-    auto basePrevious = (blockIdx.x > 0) ? dest[blockIdx.x * cBlockSize * step - 1] : 0;
-    auto baseFromShared = threadIdx.x >= cWarpSize ? sTemp[threadIdx.x / cWarpSize - 1] : 0;
-    auto v = tid < nAct ? values[tid * step] : 0;
-
-    v = scanPerWarpSync(v);
+    v = scanPerWarpSync<cWarpSize>(v);
 
     // TODO: Synchronization probably not correct. Reading and writing to dest should be done by the same block.
-    if (tid < n)
-      dest[tid * step] = basePrevious + baseFromShared + v; //; //basePreviousStride + basePrevious + baseFromShared + v;
-    __syncthreads();
+    if (tid < n && threadIdx.x != cBlockSize - 1)
+      dest[tid * step] = blockBaseValue + warpBaseValue + v;
   }
 }
 
 
-template <int cWarpSize = 32, int cWarpsPerBlock = 256 / 32>
+template <int cWarpSize, int cWarpsPerBlock>
 __forceinline__ __device__ void scanSingleStrideSteps(
   float * dest, std::size_t n, std::size_t nWriteable,
   bool firstStride,
@@ -166,50 +185,73 @@ __forceinline__ __device__ void scanSingleStrideSteps(
 
   auto grid = cooperative_groups::this_grid();
 
-  float startForNextBlock = scanSingleStrideStep(n, 1, sTemp, values);
+  auto blockwiseScan = BlockwiseScan<cWarpSize, cWarpsPerBlock> {n, 1};
+  float blockSum = blockwiseScan.scan(sTemp, values);
 
   if (tid == 0) dest[0] = 0;
-  if (threadIdx.x == cWarpsPerBlock - 1 && n > cBlockSize && blockIdx.x * cBlockSize < n - cBlockSize)
-    dest[cBlockSize * (blockIdx.x + 1) - 1] = startForNextBlock;
+  if (threadIdx.x == cWarpsPerBlock - 1 && blockwiseScan.getLastScannedIndex(blockIdx.x) < n)
+    dest[blockwiseScan.getLastScannedIndex(blockIdx.x)] = blockSum;
 
   grid.sync();
 
-  float * currentSTemp = sTemp;
-  std::size_t step = 1;
-  char additionalOffset = 0;
+  if (n > cBlockSize) {
+    std::size_t step = 1;
+    char additionalOffset = 0;
+    float * currentSTemp = sTemp;
 
-  for (;;) {
-    if (step > n / cBlockSize) break;
-    step *= cBlockSize;
-    currentSTemp += cWarpsPerBlock;
-    additionalOffset = !additionalOffset;
+    do {
+      step *= cBlockSize;
+      currentSTemp += cWarpsPerBlock;
 
-    std::size_t nFullBlocks = ceilDiv(n, step);
+      // Calculate the number of points in the interval [step, n] divisible by step.
+      // We make use of the fact that step is a power of 2.
+      // Further, step <= n.
+      //
+      // E.g., in binary,
+      //    n = 10110100
+      //    step = 1000
+      //    nPoints = n / step = 10110
+      std::size_t nPoints = n / step;
 
-    float startForNextBlock = scanSingleStrideStep(
-      nFullBlocks, step, currentSTemp, dest + step - 1 - !additionalOffset
-    );
+      // problem: (... + additionalOffset) may go beyond the array
+      BlockwiseScan<cWarpSize, cWarpsPerBlock> blockwiseScan{nPoints, step};
+      float blockSum = blockwiseScan.scan(
+        currentSTemp, dest + step - 1
+      );
+      grid.sync();
 
-    if (threadIdx.x == cWarpsPerBlock - 1 && n > cBlockSize * step && blockIdx.x * cBlockSize * step < n - cBlockSize * step)
-      dest[cBlockSize * step * (blockIdx.x + 1) - 1 - additionalOffset] = startForNextBlock;
+      if (threadIdx.x == cWarpsPerBlock - 1 && blockwiseScan.getLastScannedIndex(blockIdx.x) < n)
+        dest[blockwiseScan.getLastScannedIndex(blockIdx.x)] = blockSum;
+
+      grid.sync();
+    } while (step <= n / cBlockSize);
 
     grid.sync();
+/*
+    for (int i = 0; i < 2 * cWarpsPerBlock; ++i) {
+      dest[blockIdx.x * 2 * cWarpsPerBlock + i] = sTemp[i];
+    }
+
+    printf("Step: %lu\n", step);
+*/
+    do {
+      std::size_t nPoints = n / step;
+
+      float blockBaseValue = blockIdx.x > 0 ? dest[blockIdx.x * cBlockSize * step - 1] : 0;
+
+      scanSingleStrideFillinStep<cWarpSize, cWarpsPerBlock> (
+        dest + step - 1, nPoints, step, currentSTemp, blockBaseValue, dest + step - 1
+      );
+      grid.sync();
+
+      step /= cBlockSize;
+      currentSTemp -= cWarpsPerBlock;
+      additionalOffset = !additionalOffset;
+    } while (step > 1);
   }
 
-  while (step > 1) {
-    std::size_t nFullBlocks = ceilDiv(n, step);
-
-    scanSingleStrideFillinStep(
-      dest + step - 1 - !additionalOffset, nFullBlocks, step, currentSTemp, dest + step - 1 - additionalOffset
-    );
-    grid.sync();
-
-    step /= cBlockSize;
-    currentSTemp -= cWarpsPerBlock;
-    additionalOffset = !additionalOffset;
-  }
-
-  scanSingleStrideFillinStep(dest, n, 1, sTemp, values);
+  float blockBaseValue = blockIdx.x > 0 ? dest[blockIdx.x * cBlockSize - 1] : 0;
+  scanSingleStrideFillinStep<cWarpSize, cWarpsPerBlock> (dest, n, 1, sTemp, blockBaseValue, values);
 }
 
 // assumption: n > 0
@@ -238,21 +280,21 @@ __global__ void kernel_scan(float * dest, std::size_t n, float * values) {
   std::size_t s = 0;
   if (n > stride) {
     for (; s < n - stride; s += stride) {
-      scanSingleStrideSteps(
+      scanSingleStrideSteps<cWarpSize, cWarpsPerBlock>(
         dest + s, stride, n, firstStride, temp, values + s
       );
       firstStride = false;
     }
   }
   if (n - s > 0)  {
-    scanSingleStrideSteps(
+    scanSingleStrideSteps<cWarpSize, cWarpsPerBlock>(
       dest + s, n - s, n, firstStride, temp, values + s
     );
   }
 }
 
 constexpr int cWarpSize = 32;
-constexpr int cWarpsPerBlock = 8;
+constexpr int cWarpsPerBlock = 1;
 constexpr int cBlockSize = cWarpSize * cWarpsPerBlock;
 constexpr std::size_t nSampleData = 5 * cBlockSize * cBlockSize;
 
@@ -305,6 +347,7 @@ int main() {
     s += sampleData[i]; cpuResult[i] = s;
   }
   for (int i = 0; i < 512; ++i)
+  //for (int i : {256, 256 * 256 - 1, 256 * 256, 256 * 256 + 1, 256 * 256 + 256})
     std::cerr << i << " " << result[i] << " " <<
     cpuResult[i] << '\n';
   return 0;
