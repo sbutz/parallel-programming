@@ -228,19 +228,15 @@ __forceinline__ __device__ void scanSingleStrideSteps(
     grid.sync();
 
     do {
-      //printf("shared: %lu\n", currentSTemp - sTemp);
       std::size_t nPoints = n >> logStep;
-      //if (nPoints < cBlockSize) printf("%lu %lu %d %d %u\n", n, nPoints, logStep, ulog2(cBlockSize), cBlockSize);
 
-      float blockBaseValue = (haveMilestoneAtMinusOne || blockIdx.x > 0) && (blockIdx.x * cBlockSize <= nPoints)?
-        dest[((blockIdx.x * cBlockSize) << logStep) - 1]
-      : 0;
+      float blockBaseValue = (haveMilestoneAtMinusOne || blockIdx.x > 0) && (blockIdx.x * cBlockSize <= nPoints) ?
+          dest[((blockIdx.x * cBlockSize) << logStep) - 1]
+        : 0;
       scanSingleStrideFillinStep<cWarpSize, cWarpsPerBlock> (
         dest + uexp2(logStep) - 1, nPoints, logStep, currentSTemp, blockBaseValue, dest + uexp2(logStep) - 1, uexp2(logStep) - 1
       );
-      //printf("%lu\n", uexp2(logStep));
 
-      auto grid = cooperative_groups::this_grid();
       grid.sync();
 
       logStep -= ulog2(cBlockSize);
