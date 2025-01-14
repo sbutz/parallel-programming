@@ -61,9 +61,8 @@ __device__ float sumToLastOfWarpSync(float v) {
 //   threads return an undefined value
 template <int cWarpSize = 32, int cWarpsPerBlock = 256 / 32>
 __device__ float scanSingleStrideStep(
-  float * dest, std::size_t n, 
+  std::size_t n, 
   std::size_t step,
-  std::size_t nWriteable,
   float * sTemp,
   float * values
 ) {
@@ -79,14 +78,12 @@ __device__ float scanSingleStrideStep(
   unsigned int const lane = threadIdx.x % cWarpSize;
   unsigned int const warpInGrid = tid / cWarpSize;
 
-  auto nAct = n / step;
-
   float returnValue = 0;
 
-  if (ltCeilDiv(warpInGrid, nAct, cWarpSize)) {
+  if (ltCeilDiv(warpInGrid, n, cWarpSize)) {
     // We calculate the sum for each warp and store these sums in shared memory.
     {
-      auto v = tid < nAct ? values[tid * step + (step - 1)] : 0;
+      auto v = tid < n ? values[tid * step] : 0;
 
       v = sumToLastOfWarpSync(v);
       if (lane == cWarpSize - 1) sTemp[wid] = v;
@@ -121,7 +118,6 @@ template <int cWarpSize = 32, int cWarpsPerBlock = 256 / 32>
 __device__ void scanSingleStrideFillinStep(
   float * dest, std::size_t n, 
   std::size_t step,
-  bool firstStride,
   float * sTemp,
   float * values
 ) {
@@ -143,15 +139,16 @@ __device__ void scanSingleStrideFillinStep(
   auto nAct = n / step;
 
   if (ltCeilDiv(warpInGrid, nAct, cWarpSize)) {
-    auto basePreviousStride = (!firstStride && step == 1) ? dest[0] : 0;
-    auto basePrevious = blockIdx.x != 0 ? dest[blockIdx.x * cBlockSize * step - 1] : 0;
+    auto basePreviousStride = dest[0];
+    auto basePrevious = (blockIdx.x > 0) ? dest[blockIdx.x * cBlockSize * step - 1] : 0;
     auto baseFromShared = threadIdx.x >= cWarpSize ? sTemp[threadIdx.x / cWarpSize - 1] : 0;
     auto v = tid < nAct ? values[tid * step] : 0;
 
     v = scanPerWarpSync(v);
 
     // TODO: Synchronization probably not correct. Reading and writing to dest should be done by the same block.
-    if (tid < n + (!firstStride && step == 1)) dest[tid * step] = basePreviousStride + basePrevious + baseFromShared + v;
+    if (tid < n)
+      dest[tid * step] = basePrevious + baseFromShared + v; //; //basePreviousStride + basePrevious + baseFromShared + v;
     __syncthreads();
   }
 }
@@ -167,56 +164,52 @@ __forceinline__ __device__ void scanSingleStrideSteps(
   constexpr unsigned int cBlockSize = cWarpSize * cWarpsPerBlock;
   unsigned int const tid = cBlockSize * blockIdx.x + threadIdx.x;
 
-  std::size_t step = 1;
-  std::size_t nn = n;
-  float * currentSTemp = sTemp;
-  float * vs = values;
+  auto grid = cooperative_groups::this_grid();
 
-  float startForNextBlock = scanSingleStrideStep(dest, n, step, nWriteable, currentSTemp, values);
+  float startForNextBlock = scanSingleStrideStep(n, 1, sTemp, values);
 
   if (tid == 0) dest[0] = 0;
-  if (n > cBlockSize * step && blockIdx.x * cBlockSize * step < n - cBlockSize * step)
-    dest[cBlockSize * step * (blockIdx.x + 1) - 1] = startForNextBlock;
+  if (threadIdx.x == cWarpsPerBlock - 1 && n > cBlockSize && blockIdx.x * cBlockSize < n - cBlockSize)
+    dest[cBlockSize * (blockIdx.x + 1) - 1] = startForNextBlock;
 
-  auto grid = cooperative_groups::this_grid();
   grid.sync();
 
-  step *= cBlockSize;
-  nn /= step;
-  currentSTemp += cWarpsPerBlock;
-  vs = dest;
+  float * currentSTemp = sTemp;
+  std::size_t step = 1;
+  char additionalOffset = 0;
 
   for (;;) {
-    float startForNextBlock = scanSingleStrideStep(dest, n, step, nWriteable, currentSTemp, dest);
-
-    auto grid = cooperative_groups::this_grid();
-    grid.sync();
-
-    if (tid == 0) dest[0] = 0;
-    if (n > cBlockSize * step && blockIdx.x * cBlockSize * step < n - cBlockSize * step)
-      dest[cBlockSize * step * (blockIdx.x + 1) - 1] = startForNextBlock;
-
-    grid.sync();
-
-
-    if (nn / step == 0) break;
+    if (step > n / cBlockSize) break;
     step *= cBlockSize;
-    nn /= step;
     currentSTemp += cWarpsPerBlock;
-    vs = dest;
-    //if (blockIdx.x == 0 && threadIdx.x == 0) printf("Step is %lu\n", step);
+    additionalOffset = !additionalOffset;
+
+    std::size_t nFullBlocks = ceilDiv(n, step);
+
+    float startForNextBlock = scanSingleStrideStep(
+      nFullBlocks, step, currentSTemp, dest + step - 1 - !additionalOffset
+    );
+
+    if (threadIdx.x == cWarpsPerBlock - 1 && n > cBlockSize * step && blockIdx.x * cBlockSize * step < n - cBlockSize * step)
+      dest[cBlockSize * step * (blockIdx.x + 1) - 1 - additionalOffset] = startForNextBlock;
+
+    grid.sync();
   }
-  for (;;) {
-    nn = n / step;
-    if (blockIdx.x == 0 && threadIdx.x == 0) printf("Step is %lu\n", step);
-    scanSingleStrideFillinStep(dest, n, step, firstStride, currentSTemp, values);
-    auto grid = cooperative_groups::this_grid();
+
+  while (step > 1) {
+    std::size_t nFullBlocks = ceilDiv(n, step);
+
+    scanSingleStrideFillinStep(
+      dest + step - 1 - !additionalOffset, nFullBlocks, step, currentSTemp, dest + step - 1 - additionalOffset
+    );
     grid.sync();
 
-    if (step == 1) break;
     step /= cBlockSize;
     currentSTemp -= cWarpsPerBlock;
+    additionalOffset = !additionalOffset;
   }
+
+  scanSingleStrideFillinStep(dest, n, 1, sTemp, values);
 }
 
 // assumption: n > 0
