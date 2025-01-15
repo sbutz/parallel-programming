@@ -57,11 +57,31 @@ __device__ float sumToLastOfWarpSync(float v) {
   return v;
 }
 
+
+constexpr __host__ __device__ std::size_t uexp2(int n) {
+  return (std::size_t)1 << n;
+}
+
+
+
 template <unsigned int WarpSize, unsigned int WarpsPerBlock>
 struct Scan {
+
+  static constexpr int ulog2(std::size_t n) {
+    int res = 0;
+    std::size_t mask = 1;
+    while (n & ~mask) { mask = (mask << 1) + 1; ++res; }
+    return res;
+  }
+  static_assert(ulog2(1) == 0, "");
+  static_assert(ulog2(2) == 1, "");
+  static_assert(ulog2(0x2a000) == 17, "");
+  static_assert(ulog2((std::size_t)0 - (std::size_t)1) == 8 * sizeof(std::size_t) - 1, "");
+
   static constexpr unsigned int cWarpSize = WarpSize;
   static constexpr unsigned int cWarpsPerBlock = WarpsPerBlock;
   static constexpr unsigned int cBlockSize = cWarpSize * cWarpsPerBlock;
+  static constexpr int cLogBlockSize = ulog2(cBlockSize);
 
   static_assert(cWarpsPerBlock <= cWarpSize,
     "This code requires that the per-warp sums within a block "
@@ -69,6 +89,7 @@ struct Scan {
   );
   // assert: warpSize == cWarpSize
   // assert: blockDim.x = cWarpSize * cWarpsPerBlock
+
 
   // In phase 1a, we calculate per-warp sums and store them into shared memory.
   // Requirements:
@@ -159,112 +180,92 @@ struct Scan {
       }
     }
   }
-};
 
+  static __device__ void scanSingleStride(
+    float * dest, std::size_t n, std::size_t nWriteable,
+    bool haveMilestoneAtMinusOne,
+    float * sTemp,
+    float * values
+  ) {
+    unsigned int const tid = cBlockSize * blockIdx.x + threadIdx.x;
+    unsigned int const tidOfFirstInBlock = (tid / cBlockSize) * cBlockSize;
+    unsigned int const tidOfLastInBlock = tidOfFirstInBlock + cBlockSize - 1;
 
+    auto grid = cooperative_groups::this_grid();
 
+    float blockSum = phase1(sTemp, values, n, 0);
 
-constexpr __host__ __device__ std::size_t uexp2(int n) {
-  return (std::size_t)1 << n;
-}
-
-constexpr __host__ __device__ int ulog2(std::size_t n) {
-  int res = 0;
-  std::size_t mask = 1;
-  while (n & ~mask) { mask = (mask << 1) + 1; ++res; }
-  return res;
-}
-
-static_assert(ulog2(1) == 0, "");
-static_assert(ulog2(2) == 1, "");
-static_assert(ulog2(0x2a000) == 17, "");
-
-template <int cWarpSize, int cWarpsPerBlock>
-__forceinline__ __device__ void scanSingleStrideSteps(
-  float * dest, std::size_t n, std::size_t nWriteable,
-  bool haveMilestoneAtMinusOne,
-  float * sTemp,
-  float * values
-) {
-  constexpr std::size_t cBlockSize = cWarpSize * cWarpsPerBlock;
-  unsigned int const tid = cBlockSize * blockIdx.x + threadIdx.x;
-  unsigned int const tidOfFirstInBlock = (tid / cBlockSize) * cBlockSize;
-  unsigned int const tidOfLastInBlock = tidOfFirstInBlock + cBlockSize - 1;
-
-  auto grid = cooperative_groups::this_grid();
-
-  float blockSum = Scan<cWarpSize, cWarpsPerBlock>::phase1(sTemp, values, n, 0);
-
-  if (tidOfLastInBlock < n) {
-    if (threadIdx.x == cWarpsPerBlock - 1) dest[tidOfLastInBlock] = blockSum;
-  }
-
-  if (n > cBlockSize) {
-    int logStep = 0;
-    float * currentSTemp = sTemp;
-
-    for (;;) {
-      grid.sync();
-
-      logStep += ulog2(cBlockSize);
-      currentSTemp += cWarpsPerBlock;
-
-      // nPoints is defined by the number of whole steps of size "step"
-      //   we can make in the interval [step - 1, n - 1].
-      // This is the same as asking how many numbers in the interval
-      // [step, n] are divisible by step.
-      // We make use of the fact that step is a power of 2.
-      // Further, step <= n.
-      //
-      // E.g., in binary,
-      //    n = 10110100
-      //    step = 1000 -> logStep = 3
-      //    nPoints = n >> logStep = 10110
-      std::size_t nPoints = n >> logStep;
-
-      float blockSum = Scan<cWarpSize, cWarpsPerBlock>::phase1(
-        currentSTemp, dest, nPoints, logStep
-      );
-
-      if (nPoints <= cBlockSize) break;
-
-      if (tidOfLastInBlock < nPoints) {
-        if (threadIdx.x == cWarpsPerBlock - 1) dest[( (tidOfLastInBlock + 1) << logStep ) - 1] = blockSum;
-      }
+    if (tidOfLastInBlock < n) {
+      if (threadIdx.x == cWarpsPerBlock - 1) dest[tidOfLastInBlock] = blockSum;
     }
 
-    grid.sync();
+    if (n > cBlockSize) {
+      int logStep = 0;
+      float * currentSTemp = sTemp;
 
-    do {
-      std::size_t nPoints = n >> logStep;
+      for (;;) {
+        grid.sync();
 
-      if (tidOfFirstInBlock < nPoints) {
+        logStep += cLogBlockSize;
+        currentSTemp += cWarpsPerBlock;
 
-        // We *cannot* use array notation here, since the index might be -1.
-        // If the index type is unsigned, we get a wrong result!
-        float blockBaseValue = (haveMilestoneAtMinusOne || blockIdx.x > 0) ? *( dest + (tidOfFirstInBlock << logStep) - 1 ) : 0;
-        Scan<cWarpSize, cWarpsPerBlock>::phase2(
-          dest, nPoints, logStep, currentSTemp, blockBaseValue, dest
+        // nPoints is defined by the number of whole steps of size "step"
+        //   we can make in the interval [step - 1, n - 1].
+        // This is the same as asking how many numbers in the interval
+        // [step, n] are divisible by step.
+        // We make use of the fact that step is a power of 2.
+        // Further, step <= n.
+        //
+        // E.g., in binary,
+        //    n = 10110100
+        //    step = 1000 -> logStep = 3
+        //    nPoints = n >> logStep = 10110
+        std::size_t nPoints = n >> logStep;
+
+        float blockSum = phase1(
+          currentSTemp, dest, nPoints, logStep
         );
 
+        if (nPoints <= cBlockSize) break;
+
+        if (tidOfLastInBlock < nPoints) {
+          if (threadIdx.x == cWarpsPerBlock - 1) dest[( (tidOfLastInBlock + 1) << logStep ) - 1] = blockSum;
+        }
       }
 
       grid.sync();
 
-      logStep -= ulog2(cBlockSize);
-      currentSTemp -= cWarpsPerBlock;
-    } while (logStep);
+      do {
+        std::size_t nPoints = n >> logStep;
 
+        if (tidOfFirstInBlock < nPoints) {
+
+          // We *cannot* use array notation here, since the index might be -1.
+          // If the index type is unsigned, we get a wrong result!
+          float blockBaseValue = (haveMilestoneAtMinusOne || blockIdx.x > 0) ? *( dest + (tidOfFirstInBlock << logStep) - 1 ) : 0;
+          phase2(
+            dest, nPoints, logStep, currentSTemp, blockBaseValue, dest
+          );
+
+        }
+
+        grid.sync();
+
+        logStep -= cLogBlockSize;
+        currentSTemp -= cWarpsPerBlock;
+      } while (logStep);
+
+    }
+
+    if (tidOfFirstInBlock < n) {
+
+      // Again, we cannot use array notation, since the index might be -1.
+      float blockBaseValue = (haveMilestoneAtMinusOne || blockIdx.x > 0) ? *(dest + tidOfFirstInBlock - 1) : 0;
+      phase2(dest, n, 0, sTemp, blockBaseValue, values);
+
+    }
   }
-
-  if (tidOfFirstInBlock < n) {
-
-    // Again, we cannot use array notation, since the index might be -1.
-    float blockBaseValue = (haveMilestoneAtMinusOne || blockIdx.x > 0) ? *(dest + tidOfFirstInBlock - 1) : 0;
-    Scan<cWarpSize, cWarpsPerBlock>::phase2(dest, n, 0, sTemp, blockBaseValue, values);
-
-  }
-}
+};
 
 // assumption: n > 0
 template <int cWarpSize = 32, int cWarpsPerBlock = 256 / 32>
@@ -290,7 +291,7 @@ __global__ void kernel_scan(float * dest, std::size_t n, float * values) {
 
   if (n > stride) {
     for (; s < n - stride; s += stride) {
-      scanSingleStrideSteps<cWarpSize, cWarpsPerBlock>(
+      Scan<cWarpSize, cWarpsPerBlock>::scanSingleStride(
         dest + s, stride, n, !firstStride, temp, values + s
       );
       firstStride = false;
@@ -299,7 +300,7 @@ __global__ void kernel_scan(float * dest, std::size_t n, float * values) {
     }
   }
   if (n - s > 0)  {
-    scanSingleStrideSteps<cWarpSize, cWarpsPerBlock>(
+    Scan<cWarpSize, cWarpsPerBlock>::scanSingleStride(
       dest + s, n - s, n, !firstStride, temp, values + s
     );
   }
