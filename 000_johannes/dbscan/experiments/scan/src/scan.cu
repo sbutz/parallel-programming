@@ -4,15 +4,6 @@
 #include <cuda.h>
 #include <cooperative_groups.h>
 
-
-
-
-constexpr __host__ __device__ std::size_t uexp2(int n) {
-  return (std::size_t)1 << n;
-}
-
-
-
 template <unsigned int WarpSize, unsigned int WarpsPerBlock>
 struct Scan {
 
