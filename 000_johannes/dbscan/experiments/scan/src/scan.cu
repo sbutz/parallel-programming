@@ -4,58 +4,7 @@
 #include <cuda.h>
 #include <cooperative_groups.h>
 
-// return ceil(a / b) without overflow issues
-constexpr __host__ __device__ __forceinline__ std::size_t ceilDiv(std::size_t a, std::size_t b) {
-  return (a / b) + ((a / b) * b > 0);
-}
 
-// return result of ceil(a / b) < c without overflow issues
-constexpr __host__ __device__ __forceinline__ bool ceilDivLt(std::size_t a, std::size_t b, std::size_t c) {
-  return (a - 1) / b + 1 < c;
-}
-
-// return result of a < ceil(b / c) without overflow issues
-constexpr __host__ __device__ __forceinline__ bool ltCeilDiv(std::size_t a, std::size_t b, std::size_t c) {
-  return (b != 0) && (b - 1) / c >= a;
-}
-
-template <int cWarpSize, int nLanes = cWarpSize>
-constexpr __host__ __device__ unsigned int getMask() {
-  using MaskType = unsigned int;
-  // slightly complicated to avoid "shift count is too large" warning
-  return (nLanes == cWarpSize ? MaskType{0} : MaskType{1u << nLanes}) - MaskType{1};
-}
-
-// The function will perform the necessary synchronization itself.
-template <int cWarpSize, int nLanes = cWarpSize>
-__device__ float scanPerWarpSync(float v) {
-  using MaskType = unsigned int;
-
-  static_assert(nLanes <= cWarpSize, "");
-  static_assert(8 * sizeof(MaskType) == cWarpSize, "");
-
-  MaskType constexpr mask = getMask<cWarpSize, nLanes> ();
-
-  unsigned int const lane = threadIdx.x % cWarpSize;
-  for (int w = 1; w < nLanes; w <<= 1) {
-    float x = __shfl_up_sync(mask, v, w);
-    if (lane >= w) v += x;
-  }
-  return v;
-}
-
-// The function will perform the necessary synchronization itself.
-template <int cWarpSize>
-__device__ float sumToLastOfWarpSync(float v) {
-  using MaskType = unsigned int;
-
-  static_assert(8 * sizeof(MaskType) == cWarpSize, "");
-
-  MaskType constexpr mask = MaskType{0} - MaskType{1};
-
-  for (int w = 1; w < cWarpSize; w <<= 1) v += __shfl_up_sync(mask, v, w);
-  return v;
-}
 
 
 constexpr __host__ __device__ std::size_t uexp2(int n) {
@@ -87,9 +36,37 @@ struct Scan {
     "This code requires that the per-warp sums within a block "
     "can be scanned by a single warp."
   );
+
+  using MaskType = unsigned int;
+  static_assert(8 * sizeof(MaskType) == cWarpSize, "Wrong mask type");
+
   // assert: warpSize == cWarpSize
   // assert: blockDim.x = cWarpSize * cWarpsPerBlock
 
+
+  // The function will perform the necessary synchronization itself.
+  template <int nLanes = cWarpSize>
+  static __device__ float scanPerWarpSync(float v) {
+    static_assert(nLanes <= cWarpSize, "More lanes than lanes in a warp?");
+
+    // slightly complicated to avoid "shift count is too large" warning
+    constexpr MaskType mask =
+      (nLanes == cWarpSize ? MaskType{0} : MaskType{1u << nLanes}) - 1;
+
+    unsigned int const lane = threadIdx.x % cWarpSize;
+    for (int w = 1; w < nLanes; w <<= 1) {
+      float x = __shfl_up_sync(mask, v, w);
+      if (lane >= w) v += x;
+    }
+    return v;
+  }
+
+  // The function will perform the necessary synchronization itself.
+  static __device__ float sumToLastOfWarpSync(float v) {
+    constexpr MaskType mask = MaskType{0} - MaskType{1};
+    for (int w = 1; w < cWarpSize; w <<= 1) v += __shfl_up_sync(mask, v, w);
+    return v;
+  }
 
   // In phase 1a, we calculate per-warp sums and store them into shared memory.
   // Requirements:
@@ -122,7 +99,7 @@ struct Scan {
     if (tid / cWarpSize <= (n - 1) / cWarpSize) {
       // We calculate the sum for each warp and store these sums in shared memory.
       auto v = tid < n ? values[(((std::size_t)tid + 1) << logStep) - 1] : 0;
-      v = sumToLastOfWarpSync<cWarpSize>(v);
+      v = sumToLastOfWarpSync(v);
       if (lane == cWarpSize - 1) sStackFrame[wid] = v;
     }
   }
@@ -130,12 +107,10 @@ struct Scan {
   // In phase 1b, we perform a scan over the per-warp sums in shared memory,
   //   calculating per-block sums.
   static __device__ void phase1b (float * sStackFrame) {
-    unsigned int const wid = threadIdx.x / cWarpSize; // index of warp in block
-
     static_assert(cWarpsPerBlock <= cWarpSize, "Only the very first warp will do the job.");
     if (threadIdx.x < cWarpsPerBlock) {
       float v = sStackFrame[threadIdx.x];
-      v = scanPerWarpSync<cWarpSize, cWarpsPerBlock> (v);
+      v = scanPerWarpSync<cWarpsPerBlock> (v);
       sStackFrame[threadIdx.x] = v;
     }
   }
@@ -157,7 +132,7 @@ struct Scan {
       auto warpBaseValue = threadIdx.x >= cWarpSize ? sTemp[threadIdx.x / cWarpSize - 1] : 0;
       auto v = tid < n ? values[(((std::size_t)tid + 1) << logStep) - 1] : 0;
 
-      v = scanPerWarpSync<cWarpSize>(v);
+      v = scanPerWarpSync(v);
 
       if (tid < n && threadIdx.x != cBlockSize - 1) {
         dest[(((std::size_t)tid + 1) << logStep) - 1] = blockBaseValue + warpBaseValue + v;
@@ -291,7 +266,7 @@ __global__ void kernel_scan(float * dest, std::size_t n, float * values) {
 }
 
 constexpr int cWarpSize = 32;
-constexpr int cWarpsPerBlock = 8;
+constexpr int cWarpsPerBlock = 2;
 constexpr int cBlockSize = cWarpSize * cWarpsPerBlock;
 constexpr std::size_t nSampleData = 500 * cBlockSize * cBlockSize;
 
