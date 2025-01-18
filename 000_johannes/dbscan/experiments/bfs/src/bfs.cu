@@ -1,6 +1,9 @@
+#include <cuda.h>
+#include <cuda_runtime.h>
+
 
 using IdxType = unsigned int;
-static_assert(sizeof(IdxType) = 4, "");
+static_assert(sizeof(IdxType) == 4, "");
 
 struct Graph {
     IdxType nVertices;
@@ -11,7 +14,8 @@ struct Graph {
 struct D_Frontier {
     IdxType * cntFrontier;
     IdxType * frontier;
-}
+};
+
 __global__ void kernel_bfs(
     Graph * d_graph,
     bool * d_visited,   // working memory
