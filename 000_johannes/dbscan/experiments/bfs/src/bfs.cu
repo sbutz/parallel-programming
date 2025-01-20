@@ -21,29 +21,26 @@ struct Graph {
     IdxType * destinations;
 };
 
-struct Frontier {
-    IdxType cntFrontier;
-    IdxType * frontier;
-};
-
-__device__ void appendToFrontier(Frontier * frontier, IdxType vertex) {
-    IdxType old = atomicAdd(&frontier->cntFrontier, 1);
-    frontier->frontier[old] = vertex;
+__device__ void appendToFrontier(IdxType * cntFrontier, IdxType * frontier, IdxType vertex) {
+    IdxType old = atomicAdd(cntFrontier, 1);
+    frontier[old] = vertex;
 }
 
 __global__ void kernel_bfs(
     Graph graph,
-    bool * d_visited,
+    unsigned int * d_visited,
     unsigned int visitedTag, // must be != 0
-    Frontier * frontier,
-    Frontier * newFrontier
+    IdxType * cntFrontier,
+    IdxType * frontier,
+    IdxType * cntNewFrontier,
+    IdxType * newFrontier
 ) {
     unsigned int tid = blockDim.x * blockIdx.x + threadIdx.x;
     IdxType stride = 1;
 
     for (IdxType i = tid * stride; i < tid * stride + 1; ++i) {
-        if (i < frontier->cntFrontier) {
-            IdxType vertex = frontier->frontier[i];
+        if (i < *cntFrontier) {
+            IdxType vertex = frontier[i];
             IdxType incidenceListStart = graph.incidenceLists[vertex];
             IdxType incidenceListEnd = graph.incidenceLists[vertex+1];
 
@@ -51,7 +48,7 @@ __global__ void kernel_bfs(
                 IdxType destination = graph.destinations[j];
                 if(!d_visited[destination]) {
                     d_visited[destination] = visitedTag;
-                    appendToFrontier(newFrontier, destination);
+                    appendToFrontier(cntNewFrontier, newFrontier, destination);
                 }
             }
 
@@ -59,25 +56,87 @@ __global__ void kernel_bfs(
     }
 }
 
-constexpr IdxType sampleGraphNVertices       = 5;
+
+struct ComponentFinder {
+    IdxType * d_visited = nullptr;
+    IdxType * d_frontierBuffer = nullptr;
+    struct {
+        IdxType * d_cntFrontier;
+        IdxType * d_frontier;
+    } frontiers[2];
+    IdxType nComponentsFound = 0;
+    char currentFrontier = 0;
+
+    ComponentFinder(Graph const * graph, std::size_t maxFrontierSize) {
+        // TODO: Should we malloc everything at once?
+        CUDA_CHECK(cudaMalloc(&this->d_visited, (std::size_t)graph->nVertices * sizeof(IdxType)))
+        CUDA_CHECK(cudaMemset(this->d_visited, 0, (std::size_t)graph->nVertices * sizeof(IdxType)))
+
+        size_t frontierBufferSize = 2 * (1 + (std::size_t)maxFrontierSize);
+        CUDA_CHECK(cudaMalloc(&this->d_frontierBuffer, frontierBufferSize * sizeof(IdxType)))
+        CUDA_CHECK(cudaMemset(this->d_frontierBuffer, 0, frontierBufferSize * sizeof(IdxType)))
+        this->frontiers[0] = { this->d_frontierBuffer, this->d_frontierBuffer + 1 };
+        this->frontiers[1] = { this->d_frontierBuffer + frontierBufferSize / 2, this->d_frontierBuffer + frontierBufferSize / 2 + 1 };
+
+    }
+
+    ComponentFinder(ComponentFinder const &) = delete;
+
+    ~ComponentFinder() {
+        (void)cudaFree(this->d_frontierBuffer);
+        (void)cudaFree(this->d_visited);
+    }
+
+    template <typename Callback>
+    void findComponent(
+        Graph const * graph, IdxType startVertex, IdxType visitedTag,
+        Callback callback = []{}
+    ) {
+        constexpr int threadsPerBlock = 128;
+        IdxType startValues [2] = { 1, startVertex };
+
+        CUDA_CHECK(cudaMemcpy(this->frontiers[this->currentFrontier].d_cntFrontier, &startValues, 2 * sizeof(IdxType), cudaMemcpyHostToDevice))
+        for (;;) {
+            CUDA_CHECK(cudaMemset(this->frontiers[!this->currentFrontier].d_cntFrontier, 0, sizeof(IdxType)))
+            kernel_bfs<<<
+                dim3((graph->nVertices + threadsPerBlock - 1) / threadsPerBlock),
+                dim3(threadsPerBlock)
+            >>> (
+                *graph,
+                this->d_visited,
+                visitedTag,
+                this->frontiers[this->currentFrontier].d_cntFrontier,
+                this->frontiers[this->currentFrontier].d_frontier,
+                this->frontiers[!this->currentFrontier].d_cntFrontier,
+                this->frontiers[!this->currentFrontier].d_frontier
+            );
+            cudaDeviceSynchronize();
+
+            callback();
+
+            IdxType cntNewFrontier;
+            CUDA_CHECK(cudaMemcpy(
+                &cntNewFrontier, this->frontiers[!this->currentFrontier].d_cntFrontier, sizeof(IdxType),
+                cudaMemcpyDeviceToHost
+            ))
+            if (!cntNewFrontier) break;
+            this->currentFrontier = !this->currentFrontier;
+        }  
+    }
+};
+
+
+
+constexpr IdxType sampleGraphNVertices   = 5;
 constexpr auto sampleGraphIncidenceLists = std::array<IdxType, 7>  { 0,    2,    4,       7, 7, 8,    10 }; // has length nVertices + 1 to simplify code
 constexpr auto sampleGraphDestinations   = std::array<IdxType, 10> { 1, 3, 4, 5, 1, 3, 5,    3, 4, 5 };
 
 auto tmpFrontierData = std::array<IdxType, sampleGraphDestinations.size()> {};
 
 int main () {
-    constexpr int threadsPerBlock = 128;
-
     DeviceVector<IdxType> d_sampleGraphInicidenceLists(sampleGraphIncidenceLists);
     DeviceVector<IdxType> d_sampleGraphDestinations(sampleGraphDestinations);
-    DeviceVector<bool> d_visited (sampleGraphNVertices);
-    DeviceVector<IdxType> d_frontierData (UninitializedDeviceVectorTag {}, 2 * sampleGraphDestinations.size());
-    DeviceVector<Frontier> d_frontiers (std::array<Frontier, 2> {
-        Frontier { 1, d_frontierData.data() },
-        Frontier { 0, d_frontierData.data() + sampleGraphDestinations.size() }
-    });
     IdxType startVertex = 0;
-    CUDA_CHECK(cudaMemcpy(d_frontierData.data(), &startVertex, sizeof(IdxType), cudaMemcpyHostToDevice));
 
     Graph sampleGraph_d = {
         sampleGraphNVertices,
@@ -85,40 +144,24 @@ int main () {
         d_sampleGraphDestinations.data()
     };
 
-    int currentFrontier = 0;
-    for (;;) {
-        CUDA_CHECK(cudaMemset(
-            &(d_frontiers.data() + !currentFrontier)->cntFrontier,
-            0,
-            sizeof(IdxType)
-        ))
-        kernel_bfs<<<
-            dim3((sampleGraphNVertices + threadsPerBlock - 1) / threadsPerBlock),
-            dim3(threadsPerBlock)
-        >>> (
-            sampleGraph_d,
-            d_visited.data(),
-            1,
-            &d_frontiers.data()[currentFrontier],
-            &d_frontiers.data()[!currentFrontier]
-        );
+    ComponentFinder cf(&sampleGraph_d, sampleGraphDestinations.size());
+
+    cf.findComponent(&sampleGraph_d, startVertex, 1, [&]() {
+        IdxType cntNewFrontier = 0;
         CUDA_CHECK(cudaMemcpy(
-            tmpFrontierData.data(),
-            d_frontierData.data() + (!currentFrontier) * 2 * sampleGraphNVertices,
-            sampleGraphNVertices * sizeof(IdxType),
+            &cntNewFrontier,
+            cf.frontiers[!cf.currentFrontier].d_cntFrontier,
+            sizeof(IdxType),
             cudaMemcpyDeviceToHost
         ))
-        cudaDeviceSynchronize();
-        IdxType frontierSize;
         CUDA_CHECK(cudaMemcpy(
-            &frontierSize, &d_frontiers.data()[!currentFrontier].cntFrontier, sizeof(IdxType), cudaMemcpyDeviceToHost
+            tmpFrontierData.data(),
+            cf.frontiers[!cf.currentFrontier].d_frontier,
+            sampleGraphDestinations.size() * sizeof(IdxType),
+            cudaMemcpyDeviceToHost
         ))
-
-        printArray(tmpFrontierData.data(), frontierSize);
-        if (frontierSize == 0) break;
-
-        currentFrontier = !currentFrontier;
-    }
+        printArray(tmpFrontierData.data(), cntNewFrontier);
+    });
 
     return 0;
 }
