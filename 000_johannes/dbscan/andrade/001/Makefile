@@ -21,7 +21,7 @@ all: $(OBJDIR)/andrade
 
 $(OBJDIR)/andrade: \
 	$(OBJDIR)/andrade.o $(OBJDIR)/count_neighbors.o $(OBJDIR)/accumulate.o \
-	$(OBJDIR)/build_incidence_lists.o $(OBJDIR)/build_graph.o
+	$(OBJDIR)/build_incidence_lists.o $(OBJDIR)/build_graph.o $(OBJDIR)/bfs.o
 	$(NVCC) $(GENCODE_FLAGS) -o $@ $(NVCC_LDFLAGS) $^
 
 $(OBJDIR)/andrade.o: $(SRCDIR)/andrade.cc $(SRCDIR)/read_input.h $(SRCDIR)/build_graph.h
@@ -36,6 +36,8 @@ $(OBJDIR)/accumulate.o: $(SRCDIR)/accumulate.cu $(SRCDIR)/accumulate.h $(SRCDIR)
 
 $(OBJDIR)/build_incidence_lists.o: $(SRCDIR)/build_incidence_lists.cu $(SRCDIR)/build_incidence_lists.h $(SRCDIR)/cuda_helpers.h \
 	$(SRCDIR)/device_vector.h
+
+$(OBJDIR)/bfs.o: $(SRCDIR)/bfs.cu $(SRCDIR)/bfs.h $(SRCDIR)/cuda_helpers.h
 
 $(OBJDIR)/%.o: $(SRCDIR)/%.cu
 	@mkdir -p $(OBJDIR)

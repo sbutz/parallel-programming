@@ -1,11 +1,9 @@
 #ifndef ACCUMULATE_H_
 #define ACCUMULATE_H_
 
-#include <cstddef>
+#include "types.h"
 
-using Count = std::size_t;
-
-std::size_t accumulateOnDevice(Count * ary, std::size_t n);
-void accumulate(Count * dest, Count * src, std::size_t n);
-void accumulateCpu(Count * dest, Count * src, std::size_t n);
+IdxType accumulateOnDevice(IdxType * ary, IdxType n);
+void accumulate(IdxType * dest, IdxType * src, IdxType n);
+void accumulateCpu(IdxType * dest, IdxType * src, IdxType n);
 #endif

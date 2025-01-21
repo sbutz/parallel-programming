@@ -1,25 +1,24 @@
 #ifndef BUILD_INCIDENCE_LISTS_H_
 #define BUILD_INCIDENCE_LISTS_H_
 
+#include "types.h"
 #include <cstddef>
 
-using Count = std::size_t;
-
 void buildIncidenceLists(
-  Count * listArray,
-  float const * xs, float const * ys, Count const * cumulative, Count n,
+  IdxType * listArray,
+  float const * xs, float const * ys, IdxType const * cumulative, IdxType n,
   float r
 );
 
 void buildIncidenceListsCpu(
-  Count * listArray,
-  float const * xs, float const * ys, Count const * cumulative, Count n,
+  IdxType * listArray,
+  float const * xs, float const * ys, IdxType const * cumulative, IdxType n,
   float r
 );
 
 void buildIncidenceListsOnDevice(
-  Count * d_listArray,
-  float const * d_xs, float const * d_ys, Count const * d_cumulative, Count n,
+  IdxType * d_listArray,
+  float const * d_xs, float const * d_ys, IdxType const * d_cumulative, IdxType n,
   float r
 );
 

@@ -1,6 +1,8 @@
 #include "read_input.h"
 #include "build_graph.h"
+#include "bfs.h"
 
+#include "types.h"
 #include <iostream>
 #include <vector>
 
@@ -63,7 +65,7 @@ int main () {
 
   readInput(std::cin, a, b);
 
-  float r = 0.5f;
+  float r = 0.1f;
   auto n = a.size();
   
   auto g = buildNeighborGraph(a.data(), b.data(), n, r);
@@ -75,5 +77,13 @@ int main () {
   ok &= checkListEquality(g.startIndices, gCpu.startIndices);
   ok &= checkListEquality(g.incidenceAry, gCpu.incidenceAry);
 
+  DeviceGraph gg((IdxType)n, (IdxType)g.incidenceAry.size(), g.startIndices.data(), g.incidenceAry.data());
+  AllComponentsFinder acf(&gg.g, g.incidenceAry.size());
+  acf.findAllComponents(&gg.g, []{});
+  auto tags = acf.getComponentTagsVector();
+
+  for (std::size_t i = 0; i < a.size(); ++i) {
+    std::cout << a[i] << " " << b[i] << " " << tags[i] << '\n';
+  }
   return !ok;
 }
