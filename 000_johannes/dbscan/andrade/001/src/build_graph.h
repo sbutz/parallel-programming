@@ -12,12 +12,12 @@ struct NeighborGraph {
 
 NeighborGraph buildNeighborGraph(
   float const * xs, float const * ys, IdxType n,
-  float r
+  IdxType coreThreshold, float r
 );
 
 NeighborGraph buildNeighborGraphCpu(
   float const * xs, float const * ys, IdxType n,
-  float r
+  IdxType coreThreshold, float r
 );
 
 #endif

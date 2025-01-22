@@ -8,19 +8,19 @@
 void countNeighborsOnDevice(
   IdxType * d_dcounts,
   float const * d_xs, float const * d_ys, IdxType n,
-  float r
+  IdxType coreThreshold, float r
 );
 
 void countNeighbors(
   IdxType * dcounts,
   float const * xs, float const * ys, IdxType n,
-  float r
+  IdxType coreThreshold, float r
 );
 
 void countNeighborsCpu(
   IdxType * dcounts,
-  float * xs, float * ys, IdxType n,
-  float r
+  float const * xs, float const * ys, IdxType n,
+  IdxType coreThreshold, float r
 );
 
 #endif

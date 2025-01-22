@@ -3,21 +3,24 @@
 #include "cuda_helpers.h"
 
 static __device__ void buildIncidenceListForPoint (
-  IdxType * listArray, IdxType listStartIdx,
+  IdxType * listArray, IdxType listStartIdx, IdxType listEndIdx,
   IdxType pointIdx,
   float const * xs, float const * ys, IdxType n,
   float r
 ) {
-  float x = xs[pointIdx];
-  float y = ys[pointIdx];
-  float rsq = r * r;
-  IdxType currentListIdx = listStartIdx;
-  for (IdxType i = 0; i < n; ++i) {
-    float xd = xs[i] - x;
-    float yd = ys[i] - y;
-    if (xd * xd + yd * yd <= rsq && i != pointIdx) {
-      listArray[currentListIdx] = i;
-      ++currentListIdx;
+  if (listEndIdx - listStartIdx > 0) {
+    float x = xs[pointIdx];
+    float y = ys[pointIdx];
+    float rsq = r * r;
+
+    IdxType currentListIdx = listStartIdx;
+    for (IdxType i = 0; i < n; ++i) {
+      float xd = xs[i] - x;
+      float yd = ys[i] - y;
+      if (xd * xd + yd * yd <= rsq && i != pointIdx) {
+        listArray[currentListIdx] = i;
+        ++currentListIdx;
+      }
     }
   }
 }
@@ -32,11 +35,11 @@ static __global__ void buildIncidenceListsKernel (
   IdxType s = 0;
   if (n > stride) {
     for (; s < n - stride; s += stride) {
-      buildIncidenceListForPoint(listArray, cumulative[s + tid], s + tid, xs, ys, n, r);
+      buildIncidenceListForPoint(listArray, cumulative[s + tid], cumulative[s + tid + 1], s + tid, xs, ys, n, r);
     }
   }
   if (tid < n - s) {
-    buildIncidenceListForPoint(listArray, cumulative[s + tid], s + tid, xs, ys, n, r);
+    buildIncidenceListForPoint(listArray, cumulative[s + tid], cumulative[s + tid + 1], s + tid, xs, ys, n, r);
   }
 }
 
@@ -75,7 +78,8 @@ void buildIncidenceListsCpu(
 ) {
   float rsq = r * r;
   for (IdxType i = 0; i < n; ++i) {
-    IdxType listArrayIdx = cumulative[i]; // TODO: not necessary!!!!
+    if (cumulative[i+1] - cumulative[i] == 0) continue; // non-core point
+    auto listArrayIdx = cumulative[i];
     for (IdxType j = 0; j < n; ++j) {
       float xd = xs[i] - xs[j];
       float yd = ys[i] - ys[j];

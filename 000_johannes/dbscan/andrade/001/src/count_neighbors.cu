@@ -10,7 +10,7 @@ static __device__ void countForPoint (
   IdxType * dcounts,
   IdxType idx,
   float const * xs, float const * ys, IdxType n,
-  float r
+  IdxType coreThreshold, float r
 ) {
   float x = xs[idx];
   float y = ys[idx];
@@ -19,44 +19,45 @@ static __device__ void countForPoint (
   for (IdxType i = 0; i < n; ++i) {
     cnt += ( (xs[i] - x) * (xs[i] - x) + (ys[i] - y) * (ys[i] - y) <= rsq );
   }
-  dcounts[idx] = cnt - 1; // nobody is oneself's neighbour, so subtract 1
+  --cnt;  // nobody is oneself's neighbour, so subtract 1
+  dcounts[idx] = cnt >= coreThreshold ? cnt : 0;
 }
 
 static __global__ void countNeighborsKernel (
   IdxType * dcounts,
   float const * xs, float const * ys, IdxType n,
-  float r
+  IdxType coreThreshold, float r
 ) {
   unsigned int tid = blockIdx.x * blockDim.x + threadIdx.x;
   unsigned int stride = blockDim.x * gridDim.x;
   IdxType s = 0;
   if (n > stride) {
     for (; s < n - stride; s += stride) {
-      countForPoint(dcounts, s + tid, xs, ys, n, r);
+      countForPoint(dcounts, s + tid, xs, ys, n, coreThreshold, r);
     }
   }
   if (tid < n - s) {
-    countForPoint(dcounts, s + tid, xs, ys, n, r);
+    countForPoint(dcounts, s + tid, xs, ys, n, coreThreshold, r);
   }
 }
 
 void countNeighborsOnDevice(
   IdxType * d_dcounts,
   float const * d_xs, float const * d_ys, IdxType n,
-  float r
+  IdxType coreThreshold, float r
 ) {
   constexpr unsigned int nThreadsPerBlock = 256;
 
   dim3 dimBlock(nThreadsPerBlock, 1, 1);
   dim3 dimGrid((n + nThreadsPerBlock - 1) / nThreadsPerBlock, 1, 1);
-  countNeighborsKernel <<<dimGrid, dimBlock>>> (d_dcounts, d_xs, d_ys, n, r);
+  countNeighborsKernel <<<dimGrid, dimBlock>>> (d_dcounts, d_xs, d_ys, n, coreThreshold, r);
 	CUDA_CHECK(cudaGetLastError());
 }
 
 void countNeighbors(
   IdxType * dcounts,
   float * xs, float * ys, IdxType n,
-  float r
+  IdxType coreThreshold, float r
 ) {
   float * d_xs = nullptr, * d_ys = nullptr;
   IdxType * d_dcounts = nullptr;
@@ -67,7 +68,7 @@ void countNeighbors(
   CUDA_CHECK(cudaMemcpy (d_xs, xs, n * sizeof(float), cudaMemcpyHostToDevice));
   CUDA_CHECK(cudaMemcpy (d_ys, ys, n * sizeof(float), cudaMemcpyHostToDevice));
 
-  countNeighborsOnDevice(d_dcounts, d_xs, d_ys, n, r);
+  countNeighborsOnDevice(d_dcounts, d_xs, d_ys, n, coreThreshold, r);
 
   CUDA_CHECK(cudaMemcpy (dcounts, d_dcounts, n * sizeof(IdxType), cudaMemcpyDeviceToHost));
 
@@ -78,8 +79,8 @@ void countNeighbors(
 
 void countNeighborsCpu(
   IdxType * dcounts,
-  float * xs, float * ys, IdxType n,
-  float r
+  float const * xs, float const * ys, IdxType n,
+  IdxType coreThreshold, float r
 ) {
   float rsq = r * r;
   for (IdxType i = 0; i < n; ++i) {
@@ -89,6 +90,7 @@ void countNeighborsCpu(
       float yd = ys[i] - ys[j];
       cnt += (xd * xd + yd * yd <= rsq);
     }
-    dcounts[i] = cnt - 1;
+    --cnt;
+    dcounts[i] = (cnt >= coreThreshold) ? cnt : 0;
   }
 }

@@ -45,16 +45,16 @@ void dumpList(L1 const & lst, std::size_t around) {
 }
 
 template <typename L1, typename L2>
-bool checkListEquality(L1 const & l1, L2 const & l2) {
+bool checkListEquality(char const * info, L1 const & l1, L2 const & l2) {
   auto s1 = l1.size();
   auto s2 = l2.size();
   if (s1 != s2) {
-    std::cerr << "Lengths not equal (" << s1 << " vs. " << s2 << ")\n";
+    std::cerr << "[" << info << "] Lengths not equal (" << s1 << " vs. " << s2 << ")\n";
     return false;
   }
   for (std::size_t i = 0; i < s1; ++i) {
     if (l1[i] != l2[i]) {
-      std::cerr << "Elements at position " << i << " not equal.\n";
+      std::cerr << "[" << info << "] Elements at position " << i << " not equal.\n";
       dumpList(l1, i);
       dumpList(l2, i);
       return false;
@@ -77,7 +77,6 @@ void abortWithUsageMessage() {
 }
 
 static Config parseCommandLineArguments(int argc, char * argv []) {
-	// defaults
 	Config config {};
 
 	if (argc != 4) abortWithUsageMessage();
@@ -109,14 +108,15 @@ int main (int argc, char * argv []) {
 
   auto nDataPoints = a.size();
   
-  auto g = buildNeighborGraph(a.data(), b.data(), nDataPoints, config.r);
+  auto g = buildNeighborGraph(a.data(), b.data(), nDataPoints, config.n, config.r);
   
-  auto gCpu = buildNeighborGraph(a.data(), b.data(), nDataPoints, config.r);
+  auto gCpu = buildNeighborGraphCpu(a.data(), b.data(), nDataPoints, config.n, config.r);
 
   bool ok = true;
-  ok &= checkListEquality(g.neighborCounts, gCpu.neighborCounts);
-  ok &= checkListEquality(g.startIndices, gCpu.startIndices);
-  ok &= checkListEquality(g.incidenceAry, gCpu.incidenceAry);
+  ok &= checkListEquality("neighborCounts", g.neighborCounts, gCpu.neighborCounts);
+  ok &= checkListEquality("startIndices", g.startIndices, gCpu.startIndices);
+  ok &= checkListEquality("incidenceAry", g.incidenceAry, gCpu.incidenceAry);
+  if (!ok) { std::cerr << "error\n"; exit(1); }
 
   DeviceGraph gg((IdxType)nDataPoints, (IdxType)g.incidenceAry.size(), g.startIndices.data(), g.incidenceAry.data());
   AllComponentsFinder acf(&gg.g, g.incidenceAry.size());

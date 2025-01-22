@@ -9,13 +9,13 @@
 #include <iostream>
 NeighborGraph buildNeighborGraph(
   float const * xs, float const * ys, IdxType n,
-  float r
+  IdxType coreThreshold, float r
 ) {
   DeviceVector<float> d_xs (xs, n);
   DeviceVector<float> d_ys (ys, n);
   DeviceVector<IdxType> d_dcounts (UninitializedDeviceVectorTag {}, n);
 
-  countNeighborsOnDevice(d_dcounts.data(), d_xs.data(), d_ys.data(), n, r);
+  countNeighborsOnDevice(d_dcounts.data(), d_xs.data(), d_ys.data(), n, coreThreshold, r);
 
   DeviceVector<IdxType> d_cumulative (UninitializedDeviceVectorTag {}, 2 * (n + 1));
   CUDA_CHECK(cudaMemset(d_cumulative.data(), 0, sizeof(IdxType)));
@@ -41,10 +41,10 @@ NeighborGraph buildNeighborGraph(
 
 NeighborGraph buildNeighborGraphCpu(
   float const * xs, float const * ys, IdxType n,
-  float r
+  IdxType coreThreshold, float r
 ) {
   std::vector<IdxType> neighborCounts (n);
-  countNeighborsOnDevice(neighborCounts.data(), xs, ys, n, r);
+  countNeighborsCpu(neighborCounts.data(), xs, ys, n, coreThreshold, r);
 std::cerr << "X";
 
   std::vector<IdxType> cumulative (n + 1);
