@@ -54,9 +54,10 @@ static __global__ void kernel_bfs(
 
             for (IdxType j = incidenceListStart; j < incidenceListEnd; ++j) {
                 IdxType destination = graph.destinations[j];
-                if(!d_visited[destination]) {
+                unsigned int destinationVisited = d_visited[destination];
+                if(destinationVisited <= 1) {
                     d_visited[destination] = visitedTag;
-                    appendToFrontier(cntNewFrontier, newFrontier, destination);
+                    if (destinationVisited == 0) appendToFrontier(cntNewFrontier, newFrontier, destination);
                 }
             }
 
@@ -118,6 +119,20 @@ void ComponentFinder::findComponent(
     }  
 }
 
+static __global__ void kernel_markNonCore(
+    IdxType * d_visited,
+    IdxType * d_incidenceLists,
+    IdxType nVertices
+) {
+    unsigned int tid = blockDim.x * blockIdx.x + threadIdx.x;
+
+    if (tid < nVertices) {
+        if (d_incidenceLists[tid + 1] - d_incidenceLists[tid] == 0) {
+            d_visited[tid] = 1;
+        }
+    }    
+}
+
 static __global__ void kernel_findUnvisited(
     IdxType * outBuffer,
     IdxType * d_visited,
@@ -136,7 +151,7 @@ static __global__ void kernel_findUnvisited(
 }
 
 AllComponentsFinder::AllComponentsFinder(Graph const * graph, std::size_t maxFrontierSize)
-: cf (graph, maxFrontierSize), nextFreeTag(1), nextStartIndex(0) {
+: cf (graph, maxFrontierSize), nextFreeTag(2), nextStartIndex(0) {
     CUDA_CHECK(cudaMalloc(&this->d_resultBuffer, 2 * sizeof(IdxType)))
 }
 
@@ -149,6 +164,19 @@ std::vector<IdxType> AllComponentsFinder::getComponentTagsVector() const {
     auto res = std::vector<IdxType> (this->cf.nVertices);
     CUDA_CHECK(cudaMemcpy(res.data(), this->cf.d_visited, this->cf.nVertices * sizeof(IdxType), cudaMemcpyDeviceToHost))
     return res;
+}
+
+static void markNonCore(AllComponentsFinder * acf, Graph const * graph) {
+    constexpr int threadsPerBlock = 128;
+    kernel_markNonCore <<<
+        dim3((graph->nVertices + threadsPerBlock - 1) / threadsPerBlock),
+        dim3(threadsPerBlock)    
+    >>> (
+        acf->cf.d_visited,
+        graph->incidenceLists,
+        graph->nVertices
+    );
+    CUDA_CHECK(cudaGetLastError())
 }
 
 static auto findNextUnvisited(AllComponentsFinder * acf, Graph const * graph) {
@@ -175,6 +203,7 @@ void doFindAllComponents(
     AllComponentsFinder * acf, Graph const * graph,
     void (*callback) (void *), void * callbackData
 ) {
+    markNonCore(acf, graph);
     for (;;) {
         auto nextUnvisited = findNextUnvisited(acf, graph);
         if (!nextUnvisited.wasFound) return;
