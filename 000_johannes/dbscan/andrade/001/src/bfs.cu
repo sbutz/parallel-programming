@@ -200,15 +200,18 @@ static auto findNextUnvisited(AllComponentsFinder * acf, DNeighborGraph const * 
 }
 
 void doFindAllComponents(
+    FindComponentsProfile * profile,
     AllComponentsFinder * acf, DNeighborGraph const * graph,
     void (*callback) (void *), void * callbackData
 ) {
-    markNonCore(acf, graph);
-    for (;;) {
-        auto nextUnvisited = findNextUnvisited(acf, graph);
-        if (!nextUnvisited.wasFound) return;
-        acf->cf.findComponent(graph, nextUnvisited.idx, acf->nextFreeTag, callback, callbackData);
-        ++acf->nextFreeTag;
-    }
+    profile->timeMarkNonCore = runAndMeasureCuda(markNonCore, acf, graph);
+    profile->timeFindComponents = runAndMeasureCuda([&]{
+        for (;;) {
+            auto nextUnvisited = findNextUnvisited(acf, graph);
+            if (!nextUnvisited.wasFound) return;
+            acf->cf.findComponent(graph, nextUnvisited.idx, acf->nextFreeTag, callback, callbackData);
+            ++acf->nextFreeTag;
+        }
+    });
 }
 

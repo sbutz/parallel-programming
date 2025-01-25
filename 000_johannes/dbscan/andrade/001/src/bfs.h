@@ -5,6 +5,11 @@
 #include <cstddef>
 #include <vector>
 
+struct FindComponentsProfile {
+  float timeMarkNonCore;
+  float timeFindComponents;
+};
+
 struct DeviceGraph {
   DNeighborGraph g;
   DeviceGraph(IdxType nVertices, IdxType lenDestinations, IdxType * d_startIndices, IdxType * destinations);
@@ -35,6 +40,7 @@ struct ComponentFinder {
 struct AllComponentsFinder;
 
 void doFindAllComponents(
+  FindComponentsProfile * profile,
   AllComponentsFinder *, DNeighborGraph const *,
   void (*callback) (void *) = nullptr, void * callbackData = nullptr
 );
@@ -50,8 +56,8 @@ struct AllComponentsFinder {
   ~AllComponentsFinder();
 
   template <typename Callback>
-  void findAllComponents(DNeighborGraph const * graph, Callback && callback = []{}) {
-    doFindAllComponents(this, graph,
+  void findAllComponents(FindComponentsProfile * profile, DNeighborGraph const * graph, Callback && callback = []{}) {
+    doFindAllComponents(profile, this, graph,
       [](void * callback) { (*(Callback *)callback) (); },
       &callback
     );

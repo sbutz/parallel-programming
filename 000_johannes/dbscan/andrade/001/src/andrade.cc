@@ -8,6 +8,8 @@
 #include <iostream>
 #include <fstream>
 #include <vector>
+#include <cuda_runtime.h>
+#include "cuda_helpers.h"
 
 char const * usageText = "Usage: andrade input_file n r\n";
 
@@ -70,6 +72,7 @@ struct Config {
   unsigned int n;
   float r;
   bool performWarmup;
+  bool checkGraph;
 };
 
 
@@ -95,6 +98,9 @@ static Config parseCommandLineArguments(int argc, char * argv []) {
 	  	switch (argstr[j]) {
         case 'w': {
           config.performWarmup = true;
+        } break;
+        case 'c': {
+          config.checkGraph = true;
         } break;
       }
     }
@@ -147,7 +153,8 @@ void jsonPrintIdxTypeAry(IdxType * ary, size_t n) {
 
 
 int main (int argc, char * argv []) {
-  struct Profile : BuildNeighborGraphProfile {
+  struct Profile : BuildNeighborGraphProfile, FindComponentsProfile {
+    float timeTotal;
   };
 
   Profile profile = {};
@@ -159,27 +166,35 @@ int main (int argc, char * argv []) {
   readInputFile(a, b, config.inputFilePath);
 
   auto nDataPoints = a.size();
-  auto points = copyPointsToDevice(a.data(), b.data(), nDataPoints);
-
   if (config.performWarmup) warmup();
 
+	cudaEvent_t start; CUDA_CHECK(cudaEventCreate(&start));
+	cudaEvent_t stop; CUDA_CHECK(cudaEventCreate(&stop));
+	CUDA_CHECK(cudaEventRecord(start));
+
+  auto points = copyPointsToDevice(a.data(), b.data(), nDataPoints);
   auto g1 = buildDNeighborGraphOnDevice(
     &profile, points.d_x, points.d_y, points.n, config.n, config.r
   );
-  
-  auto g = copyDNeighborGraphToHost(g1);
-
-  auto gCpu = buildNeighborGraphCpu(a.data(), b.data(), nDataPoints, config.n, config.r);
-
-  bool ok = true;
-  ok &= checkListEquality("neighborCounts", g.neighborCounts, gCpu.neighborCounts);
-  ok &= checkListEquality("startIndices", g.startIndices, gCpu.startIndices);
-  ok &= checkListEquality("incidenceAry", g.incidenceAry, gCpu.incidenceAry);
-  if (!ok) { std::cerr << "error\n"; exit(1); }
-
-  AllComponentsFinder acf(&g1, g.incidenceAry.size());
-  acf.findAllComponents(&g1, []{});
+  AllComponentsFinder acf(&g1, g1.lenIncidenceAry);
+  acf.findAllComponents(&profile, &g1, []{});
   auto tags = acf.getComponentTagsVector();
+
+	CUDA_CHECK(cudaEventRecord(stop));
+  CUDA_CHECK(cudaEventElapsedTime(&profile.timeTotal, start, stop));
+
+  if (config.checkGraph) {
+    auto g = copyDNeighborGraphToHost(g1);
+
+    auto gCpu = buildNeighborGraphCpu(a.data(), b.data(), nDataPoints, config.n, config.r);
+
+    bool ok = true;
+    ok &= checkListEquality("neighborCounts", g.neighborCounts, gCpu.neighborCounts);
+    ok &= checkListEquality("startIndices", g.startIndices, gCpu.startIndices);
+    ok &= checkListEquality("incidenceAry", g.incidenceAry, gCpu.incidenceAry);
+    if (!ok) { std::cerr << "Error: Graphs generated on CPU and GPU differ.\n"; exit(1); }
+  }
+
 
   // print JSON output
   std::cout << "{\n";
@@ -192,6 +207,9 @@ int main (int argc, char * argv []) {
       std::cout << "\"timeNeighborCount\": " << profile.timeNeighborCount << ",\n";
       std::cout << "\"timePrefixScan\": " << profile.timePrefixScan << ",\n";
       std::cout << "\"timeBuildIncidenceList\": " << profile.timeBuildIncidenceList << "\n";      
+      std::cout << "\"timeMarkNonCore\": " << profile.timeMarkNonCore << ",\n";      
+      std::cout << "\"timeFindComponents\": " << profile.timeFindComponents << "\n";      
+      std::cout << "\"timeTotal\": " << profile.timeTotal << "\n";      
     std::cout << "}\n";
   std::cout << "}\n";
 
