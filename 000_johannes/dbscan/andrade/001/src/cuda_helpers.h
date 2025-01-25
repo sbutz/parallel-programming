@@ -4,6 +4,7 @@
 #include <stdio.h>
 #include <cuda.h>
 #include <cuda_runtime.h>
+#include <utility>
 
 // *****************************************************************************
 // Utilities für Error-Checking
@@ -28,7 +29,7 @@ inline void gpuAssert(
 // *****************************************************************************
 
 template <typename Fct, typename ... Args>
-inline float runAndMeasureCuda(Fct f, Args ... args) {
+inline float runAndMeasureCuda(Fct && f, Args && ... args) {
 	float timeInMilliseconds = 0;
 
 	// Zeitmessung: Zeitpunkte definieren
@@ -38,7 +39,7 @@ inline float runAndMeasureCuda(Fct f, Args ... args) {
 	// Zeitmessung: Start-Zeitpunkt
 	CUDA_CHECK(cudaEventRecord(start));
 
-	f(args ...);
+	std::forward<Fct>(f) (std::forward<Args>(args) ...);
 
 	// Zeitmessung: Stop-Zeitpunkt
 	CUDA_CHECK(cudaEventRecord(stop));
