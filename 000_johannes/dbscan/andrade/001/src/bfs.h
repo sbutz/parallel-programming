@@ -6,8 +6,8 @@
 #include <vector>
 
 struct DeviceGraph {
-  Graph g;
-  DeviceGraph(IdxType nVertices, IdxType lenDestinations, IdxType * incidenceLists, IdxType * destinations);
+  DNeighborGraph g;
+  DeviceGraph(IdxType nVertices, IdxType lenDestinations, IdxType * d_startIndices, IdxType * destinations);
   DeviceGraph(DeviceGraph const &) = delete;
   ~DeviceGraph();
 };
@@ -23,11 +23,11 @@ struct ComponentFinder {
   IdxType nComponentsFound = 0;
   char currentFrontier = 0;
 
-  ComponentFinder(Graph const * graph, size_t maxFrontierSize);
+  ComponentFinder(DNeighborGraph const * graph, size_t maxFrontierSize);
   ComponentFinder(ComponentFinder const &) = delete;
   ~ComponentFinder();
   void findComponent(
-      Graph const * graph, IdxType startVertex, IdxType visitedTag,
+      DNeighborGraph const * graph, IdxType startVertex, IdxType visitedTag,
       void (*callback) (void *) = nullptr, void * callbackData = nullptr
   );
 };
@@ -35,7 +35,7 @@ struct ComponentFinder {
 struct AllComponentsFinder;
 
 void doFindAllComponents(
-  AllComponentsFinder *, Graph const *,
+  AllComponentsFinder *, DNeighborGraph const *,
   void (*callback) (void *) = nullptr, void * callbackData = nullptr
 );
 
@@ -45,12 +45,12 @@ struct AllComponentsFinder {
   IdxType nextStartIndex;
   IdxType * d_resultBuffer;
 
-  AllComponentsFinder(Graph const * graph, size_t maxFrontierSize);
+  AllComponentsFinder(DNeighborGraph const * graph, size_t maxFrontierSize);
   AllComponentsFinder(AllComponentsFinder const &) = delete;
   ~AllComponentsFinder();
 
   template <typename Callback>
-  void findAllComponents(Graph const * graph, Callback && callback = []{}) {
+  void findAllComponents(DNeighborGraph const * graph, Callback && callback = []{}) {
     doFindAllComponents(this, graph,
       [](void * callback) { (*(Callback *)callback) (); },
       &callback

@@ -14,17 +14,17 @@ void printArray(T * ary, size_t n) {
 }
 
 
-DeviceGraph::DeviceGraph(IdxType nVertices, IdxType lenDestinations, IdxType * incidenceLists, IdxType * destinations) {
+DeviceGraph::DeviceGraph(IdxType nVertices, IdxType lenDestinations, IdxType * d_startIndices, IdxType * d_incidenceAry) {
     g.nVertices = nVertices;
-    CUDA_CHECK(cudaMalloc(&g.incidenceLists, (nVertices + 1) * sizeof(IdxType)))
-    CUDA_CHECK(cudaMemcpy(g.incidenceLists, incidenceLists, (nVertices + 1) * sizeof(IdxType), cudaMemcpyHostToDevice))
-    CUDA_CHECK(cudaMalloc(&g.destinations, lenDestinations * sizeof(IdxType)))
-    CUDA_CHECK(cudaMemcpy(g.destinations, destinations, lenDestinations * sizeof(IdxType), cudaMemcpyHostToDevice))
+    CUDA_CHECK(cudaMalloc(&g.d_startIndices, (nVertices + 1) * sizeof(IdxType)))
+    CUDA_CHECK(cudaMemcpy(g.d_startIndices, d_startIndices, (nVertices + 1) * sizeof(IdxType), cudaMemcpyHostToDevice))
+    CUDA_CHECK(cudaMalloc(&g.d_incidenceAry, lenDestinations * sizeof(IdxType)))
+    CUDA_CHECK(cudaMemcpy(g.d_incidenceAry, d_incidenceAry, lenDestinations * sizeof(IdxType), cudaMemcpyHostToDevice))
 }
 
 DeviceGraph::~DeviceGraph() {
-    (void)cudaFree(g.destinations);
-    (void)cudaFree(g.incidenceLists);
+    (void)cudaFree(g.d_incidenceAry);
+    (void)cudaFree(g.d_startIndices);
 }
 
 
@@ -35,7 +35,7 @@ static __device__ void appendToFrontier(IdxType * cntFrontier, IdxType * frontie
 }
 
 static __global__ void kernel_bfs(
-    Graph graph,
+    DNeighborGraph graph,
     unsigned int * d_visited,
     unsigned int visitedTag, // must be != 0
     IdxType * cntFrontier,
@@ -49,11 +49,11 @@ static __global__ void kernel_bfs(
     for (IdxType i = tid * stride; i < tid * stride + 1; ++i) {
         if (i < *cntFrontier) {
             IdxType vertex = frontier[i];
-            IdxType incidenceListStart = graph.incidenceLists[vertex];
-            IdxType incidenceListEnd = graph.incidenceLists[vertex+1];
+            IdxType incidenceListStart = graph.d_startIndices[vertex];
+            IdxType incidenceListEnd = graph.d_startIndices[vertex+1];
 
             for (IdxType j = incidenceListStart; j < incidenceListEnd; ++j) {
-                IdxType destination = graph.destinations[j];
+                IdxType destination = graph.d_incidenceAry[j];
                 unsigned int destinationVisited = d_visited[destination];
                 if(destinationVisited <= 1) {
                     d_visited[destination] = visitedTag;
@@ -65,7 +65,7 @@ static __global__ void kernel_bfs(
     }
 }
 
-ComponentFinder::ComponentFinder(Graph const * graph, std::size_t maxFrontierSize) : nVertices(graph->nVertices) {
+ComponentFinder::ComponentFinder(DNeighborGraph const * graph, std::size_t maxFrontierSize) : nVertices(graph->nVertices) {
     // TODO: Should we malloc everything at once?
     CUDA_CHECK(cudaMalloc(&this->d_visited, (std::size_t)graph->nVertices * sizeof(IdxType)))
     CUDA_CHECK(cudaMemset(this->d_visited, 0, (std::size_t)graph->nVertices * sizeof(IdxType)))
@@ -83,7 +83,7 @@ ComponentFinder::~ComponentFinder() {
 }
 
 void ComponentFinder::findComponent(
-    Graph const * graph, IdxType startVertex, IdxType visitedTag,
+    DNeighborGraph const * graph, IdxType startVertex, IdxType visitedTag,
     void (*callback) (void *), void * callbackData
 ) {
     constexpr int threadsPerBlock = 128;
@@ -121,13 +121,13 @@ void ComponentFinder::findComponent(
 
 static __global__ void kernel_markNonCore(
     IdxType * d_visited,
-    IdxType * d_incidenceLists,
+    IdxType * d_d_startIndices,
     IdxType nVertices
 ) {
     unsigned int tid = blockDim.x * blockIdx.x + threadIdx.x;
 
     if (tid < nVertices) {
-        if (d_incidenceLists[tid + 1] - d_incidenceLists[tid] == 0) {
+        if (d_d_startIndices[tid + 1] - d_d_startIndices[tid] == 0) {
             d_visited[tid] = 1;
         }
     }    
@@ -150,7 +150,7 @@ static __global__ void kernel_findUnvisited(
     }    
 }
 
-AllComponentsFinder::AllComponentsFinder(Graph const * graph, std::size_t maxFrontierSize)
+AllComponentsFinder::AllComponentsFinder(DNeighborGraph const * graph, std::size_t maxFrontierSize)
 : cf (graph, maxFrontierSize), nextFreeTag(2), nextStartIndex(0) {
     CUDA_CHECK(cudaMalloc(&this->d_resultBuffer, 2 * sizeof(IdxType)))
 }
@@ -166,20 +166,20 @@ std::vector<IdxType> AllComponentsFinder::getComponentTagsVector() const {
     return res;
 }
 
-static void markNonCore(AllComponentsFinder * acf, Graph const * graph) {
+static void markNonCore(AllComponentsFinder * acf, DNeighborGraph const * graph) {
     constexpr int threadsPerBlock = 128;
     kernel_markNonCore <<<
         dim3((graph->nVertices + threadsPerBlock - 1) / threadsPerBlock),
         dim3(threadsPerBlock)    
     >>> (
         acf->cf.d_visited,
-        graph->incidenceLists,
+        graph->d_startIndices,
         graph->nVertices
     );
     CUDA_CHECK(cudaGetLastError())
 }
 
-static auto findNextUnvisited(AllComponentsFinder * acf, Graph const * graph) {
+static auto findNextUnvisited(AllComponentsFinder * acf, DNeighborGraph const * graph) {
     constexpr int threadsPerBlock = 128;
     CUDA_CHECK(cudaMemset(acf->d_resultBuffer, 0, 2 * sizeof(IdxType)))
 
@@ -200,7 +200,7 @@ static auto findNextUnvisited(AllComponentsFinder * acf, Graph const * graph) {
 }
 
 void doFindAllComponents(
-    AllComponentsFinder * acf, Graph const * graph,
+    AllComponentsFinder * acf, DNeighborGraph const * graph,
     void (*callback) (void *), void * callbackData
 ) {
     markNonCore(acf, graph);

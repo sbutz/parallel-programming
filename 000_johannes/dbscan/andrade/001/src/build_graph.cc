@@ -8,6 +8,78 @@
 
 #include <iostream>
 
+DPoints copyPointsToDevice(float * x, float * y, IdxType n) {
+  float * d_x, * d_y;
+  CUDA_CHECK(cudaMalloc(&d_x, n * sizeof(float)))
+  CUDA_CHECK(cudaMalloc(&d_y, n * sizeof(float)))
+  CUDA_CHECK(cudaMemcpy(d_x, x, n * sizeof(float), cudaMemcpyHostToDevice))
+  CUDA_CHECK(cudaMemcpy(d_y, y, n * sizeof(float), cudaMemcpyHostToDevice))
+  return { n, d_x, d_y };
+}
+DNeighborGraph buildDNeighborGraphOnDevice(
+  BuildNeighborGraphProfile * profile,
+  float const * d_xs, float const * d_ys, IdxType n,
+  IdxType coreThreshold, float r
+) {
+  IdxType * d_dcounts;
+  CUDA_CHECK(cudaMalloc(&d_dcounts, n * sizeof(IdxType)))
+
+  profile->timeNeighborCount = runAndMeasureCuda(
+    countNeighborsOnDevice,
+    d_dcounts, d_xs, d_ys, n, coreThreshold, r
+  );
+
+  IdxType * d_temp;
+  CUDA_CHECK(cudaMalloc(&d_temp, 2 * n * sizeof(IdxType)))
+  IdxType * d_dest1 = d_temp, * d_dest2 = d_dest1 + n;
+  IdxType * s;
+  profile->timePrefixScan = runAndMeasureCuda(
+    prefixScanOnDevice,
+    &s,
+    d_dest1,
+    d_dest2,
+    d_dcounts,
+    n
+  );
+
+  IdxType * d_startIndices;
+  CUDA_CHECK(cudaMalloc(&d_startIndices, (n + 1) * sizeof(IdxType)))
+  CUDA_CHECK(cudaMemset(d_startIndices, 0, sizeof(IdxType)))
+  CUDA_CHECK(cudaMemcpy(d_startIndices + 1, s, n * (sizeof(IdxType)), cudaMemcpyDeviceToDevice))
+  (void)cudaFree(d_temp);
+
+  IdxType lenIncidenceAry;
+  CUDA_CHECK(cudaMemcpy(&lenIncidenceAry, d_startIndices + n, sizeof(IdxType), cudaMemcpyDeviceToHost));
+
+  IdxType * d_incidenceAry;
+  CUDA_CHECK(cudaMalloc(&d_incidenceAry, lenIncidenceAry * sizeof(IdxType)))
+  profile->timeBuildIncidenceList = runAndMeasureCuda(
+    buildIncidenceListsOnDevice,
+    d_incidenceAry, d_xs, d_ys, d_startIndices, n, r
+  );
+
+  return { n, lenIncidenceAry, d_dcounts, d_startIndices, d_incidenceAry };
+}
+
+NeighborGraph copyDNeighborGraphToHost(DNeighborGraph const & g) {
+  std::vector<IdxType> neighborCounts(g.nVertices);
+  std::vector<IdxType> startIndices(g.nVertices + 1);
+  std::vector<IdxType> incidenceAry(g.lenIncidenceAry);
+
+  CUDA_CHECK(cudaMemcpy(neighborCounts.data(), g.d_neighborCounts, g.nVertices * sizeof(IdxType), cudaMemcpyDeviceToHost))
+  CUDA_CHECK(cudaMemcpy(startIndices.data(), g.d_startIndices, (g.nVertices + 1) * sizeof(IdxType), cudaMemcpyDeviceToHost));
+  CUDA_CHECK(cudaMemcpy(incidenceAry.data(), g.d_incidenceAry, g.lenIncidenceAry * sizeof(IdxType), cudaMemcpyDeviceToHost))
+
+  return { std::move(neighborCounts), std::move(startIndices), std::move(incidenceAry) };
+}
+
+void freeDNeighborGraph(DNeighborGraph & g) {
+  (void)cudaFree(g.d_neighborCounts);
+  (void)cudaFree(g.d_startIndices);
+  (void)cudaFree(g.d_incidenceAry);
+  g = DNeighborGraph{};
+}
+
 NeighborGraph buildNeighborGraph(
   BuildNeighborGraphProfile * profile,
   float const * xs, float const * ys, IdxType n,
@@ -15,44 +87,14 @@ NeighborGraph buildNeighborGraph(
 ) {
   DeviceVector<float> d_xs (xs, n);
   DeviceVector<float> d_ys (ys, n);
-  DeviceVector<IdxType> d_dcounts (UninitializedDeviceVectorTag {}, n);
 
-  profile->timeNeighborCount = runAndMeasureCuda(
-    countNeighborsOnDevice,
-    d_dcounts.data(), d_xs.data(), d_ys.data(), n, coreThreshold, r
-  );
+  DNeighborGraph g = buildDNeighborGraphOnDevice(profile, d_xs.data(), d_ys.data(), n, coreThreshold, r);
 
-  DeviceVector<IdxType> d_cumulative (UninitializedDeviceVectorTag {}, 2 * (n + 1));
-  CUDA_CHECK(cudaMemset(d_cumulative.data(), 0, sizeof(IdxType)));
-  CUDA_CHECK(cudaMemset(d_cumulative.data() + n + 1, 0, sizeof(IdxType)));
-  //CUDA_CHECK(cudaMemcpy(d_cumulative.data() + 1, d_dcounts.data(), n * sizeof(IdxType), cudaMemcpyDeviceToDevice));
-  IdxType * s;
-  profile->timePrefixScan = runAndMeasureCuda(
-    prefixScanOnDevice,
-    &s,
-    d_cumulative.data() + 1,
-    d_cumulative.data() + n + 2,
-    d_dcounts.data(),
-    n
-  );
+  NeighborGraph gg = copyDNeighborGraphToHost(g);
 
-  IdxType lenIncidenceAry;
-  CUDA_CHECK(cudaMemcpy(&lenIncidenceAry, s + n - 1, sizeof(IdxType), cudaMemcpyDeviceToHost));
-  DeviceVector<IdxType> d_incidenceAry (UninitializedDeviceVectorTag{}, lenIncidenceAry);
-  profile->timeBuildIncidenceList = runAndMeasureCuda(
-    buildIncidenceListsOnDevice,
-    d_incidenceAry.data(), d_xs.data(), d_ys.data(), s - 1, n, r
-  );
+  freeDNeighborGraph(g);
 
-  std::vector<IdxType> neighborCounts(n);
-  std::vector<IdxType> startIndices(n + 1);
-  std::vector<IdxType> incidenceAry(lenIncidenceAry);
-
-  d_dcounts.memcpyToHost(neighborCounts.data());
-  CUDA_CHECK(cudaMemcpy(startIndices.data(), s - 1, (n + 1) * sizeof(IdxType), cudaMemcpyDeviceToHost));
-  d_incidenceAry.memcpyToHost(incidenceAry.data());
-
-  return { std::move(neighborCounts), std::move(startIndices), std::move(incidenceAry) };
+  return gg;
 }
 
 NeighborGraph buildNeighborGraphCpu(

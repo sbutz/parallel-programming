@@ -4,10 +4,14 @@
 using IdxType = unsigned int;
 static_assert(sizeof(IdxType) == 4, "");
 
-struct Graph {
+struct DNeighborGraph {
   IdxType nVertices;
-  IdxType * incidenceLists; // has length nVertices + 1 to simplify code
-  IdxType * destinations;
+  IdxType lenIncidenceAry;
+  IdxType * d_neighborCounts;
+  IdxType * d_startIndices;
+  IdxType * d_incidenceAry;
 };
+
+
 
 #endif

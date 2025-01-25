@@ -158,12 +158,17 @@ int main (int argc, char * argv []) {
   auto b = std::vector<float> {};
   readInputFile(a, b, config.inputFilePath);
 
+  auto nDataPoints = a.size();
+  auto points = copyPointsToDevice(a.data(), b.data(), nDataPoints);
+
   if (config.performWarmup) warmup();
 
-  auto nDataPoints = a.size();
+  auto g1 = buildDNeighborGraphOnDevice(
+    &profile, points.d_x, points.d_y, points.n, config.n, config.r
+  );
   
-  auto g = buildNeighborGraph(&profile, a.data(), b.data(), nDataPoints, config.n, config.r);
-  
+  auto g = copyDNeighborGraphToHost(g1);
+
   auto gCpu = buildNeighborGraphCpu(a.data(), b.data(), nDataPoints, config.n, config.r);
 
   bool ok = true;
@@ -172,9 +177,8 @@ int main (int argc, char * argv []) {
   ok &= checkListEquality("incidenceAry", g.incidenceAry, gCpu.incidenceAry);
   if (!ok) { std::cerr << "error\n"; exit(1); }
 
-  DeviceGraph gg((IdxType)nDataPoints, (IdxType)g.incidenceAry.size(), g.startIndices.data(), g.incidenceAry.data());
-  AllComponentsFinder acf(&gg.g, g.incidenceAry.size());
-  acf.findAllComponents(&gg.g, []{});
+  AllComponentsFinder acf(&g1, g.incidenceAry.size());
+  acf.findAllComponents(&g1, []{});
   auto tags = acf.getComponentTagsVector();
 
   // print JSON output
