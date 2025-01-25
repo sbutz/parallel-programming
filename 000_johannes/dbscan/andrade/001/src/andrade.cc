@@ -173,6 +173,7 @@ static auto runDbscan (
   auto tags = acf.getComponentTagsVector();
 
 	CUDA_CHECK(cudaEventRecord(stop));
+  CUDA_CHECK(cudaEventSynchronize(stop));
   CUDA_CHECK(cudaEventElapsedTime(&profile->timeTotal, start, stop));
 
   struct Result {
@@ -219,9 +220,9 @@ int main (int argc, char * argv []) {
     std::cout << "\"profile\": {\n";
       std::cout << "\"timeNeighborCount\": " << profile.timeNeighborCount << ",\n";
       std::cout << "\"timePrefixScan\": " << profile.timePrefixScan << ",\n";
-      std::cout << "\"timeBuildIncidenceList\": " << profile.timeBuildIncidenceList << "\n";      
+      std::cout << "\"timeBuildIncidenceList\": " << profile.timeBuildIncidenceList << ",\n";      
       std::cout << "\"timeMarkNonCore\": " << profile.timeMarkNonCore << ",\n";      
-      std::cout << "\"timeFindComponents\": " << profile.timeFindComponents << "\n";      
+      std::cout << "\"timeFindComponents\": " << profile.timeFindComponents << ",\n";      
       std::cout << "\"timeTotal\": " << profile.timeTotal << "\n";      
     std::cout << "}\n";
   std::cout << "}\n";
