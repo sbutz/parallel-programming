@@ -28,7 +28,7 @@ inline void gpuAssert(
 // *****************************************************************************
 
 template <typename Fct, typename ... Args>
-float runAndMeasureCuda(Fct f, Args ... args) {
+inline float runAndMeasureCuda(Fct f, Args ... args) {
 	float timeInMilliseconds = 0;
 
 	// Zeitmessung: Zeitpunkte definieren

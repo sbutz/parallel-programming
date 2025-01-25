@@ -1,6 +1,7 @@
 #include "read_input.h"
 #include "build_graph.h"
 #include "bfs.h"
+#include "warmup.h"
 
 #include "types.h"
 #include <cstring>
@@ -68,6 +69,7 @@ struct Config {
   char const * inputFilePath;
   unsigned int n;
   float r;
+  bool performWarmup;
 };
 
 
@@ -79,13 +81,24 @@ void abortWithUsageMessage() {
 static Config parseCommandLineArguments(int argc, char * argv []) {
 	Config config {};
 
-	if (argc != 4) abortWithUsageMessage();
+	if (argc < 4 || argc > 5) abortWithUsageMessage();
 
   config.inputFilePath = !strcmp("--", argv[1]) ? nullptr : argv[1];
   config.n = strtol(argv[2], nullptr, 10);
   config.r = strtof(argv[3], nullptr);
 
   if (config.n <= 0 || config.r <= 0.0f) abortWithUsageMessage();
+
+  if (argc == 5) {
+    char const * argstr = argv[4];
+  	for (size_t j = 0; argstr[j]; ++j) {
+	  	switch (argstr[j]) {
+        case 'w': {
+          config.performWarmup = true;
+        } break;
+      }
+    }
+  }
 
   return config;
 }
@@ -99,16 +112,57 @@ static void readInputFile(std::vector<float> & a, std::vector<float> & b, char c
   }
 }
 
+// *****************************************************************************
+// Hilfsfunktionen für die Ausgabe von Arrays im JSON-Format
+// *****************************************************************************
+
+void jsonPrintFloatAry(float * ary, size_t n) {
+	printf("[ ");
+	if (n > 0) {
+		size_t i = 0;
+		for (;;) {
+			printf("%.7f", ary[i]);
+			++i;
+			if (i == n) break;
+			printf(", ");
+		}
+	}
+	printf(" ]");
+}
+
+void jsonPrintIdxTypeAry(IdxType * ary, size_t n) {
+	constexpr char const * formatStr = sizeof(IdxType) == 4? "%u" : "%lu";
+	printf("[ ");
+	if (n > 0) {
+		size_t i = 0;
+		for (;;) {
+			printf(formatStr, ary[i]);
+			++i;
+			if (i == n) break;
+			printf(", ");
+		}
+	}
+	printf(" ]");
+}
+
+
 int main (int argc, char * argv []) {
+  struct Profile : BuildNeighborGraphProfile {
+  };
+
+  Profile profile = {};
+
   Config config = parseCommandLineArguments(argc, argv);
 
   auto a = std::vector<float> {};
   auto b = std::vector<float> {};
   readInputFile(a, b, config.inputFilePath);
 
+  if (config.performWarmup) warmup();
+
   auto nDataPoints = a.size();
   
-  auto g = buildNeighborGraph(a.data(), b.data(), nDataPoints, config.n, config.r);
+  auto g = buildNeighborGraph(&profile, a.data(), b.data(), nDataPoints, config.n, config.r);
   
   auto gCpu = buildNeighborGraphCpu(a.data(), b.data(), nDataPoints, config.n, config.r);
 
@@ -123,8 +177,19 @@ int main (int argc, char * argv []) {
   acf.findAllComponents(&gg.g, []{});
   auto tags = acf.getComponentTagsVector();
 
-  for (std::size_t i = 0; i < a.size(); ++i) {
-    std::cout << a[i] << " " << b[i] << " " << tags[i] << '\n';
-  }
-  return !ok;
+  // print JSON output
+  std::cout << "{\n";
+    std::cout << "\"output\": {\n";
+      std::cout << "\"x\": "; jsonPrintFloatAry(a.data(), a.size()); std::cout << ",\n";
+      std::cout << "\"y\": "; jsonPrintFloatAry(b.data(), b.size()); std::cout << ",\n";
+      std::cout << "\"cluster_id\": "; jsonPrintIdxTypeAry(tags.data(), tags.size()); std::cout << "\n";
+    std::cout << "},\n";
+    std::cout << "\"profile\": {\n";
+      std::cout << "\"timeNeighborCount\": " << profile.timeNeighborCount << ",\n";
+      std::cout << "\"timePrefixScan\": " << profile.timePrefixScan << ",\n";
+      std::cout << "\"timeBuildIncidenceList\": " << profile.timeBuildIncidenceList << "\n";      
+    std::cout << "}\n";
+  std::cout << "}\n";
+
+  return 0;
 }

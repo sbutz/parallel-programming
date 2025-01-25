@@ -4,6 +4,12 @@
 #include "types.h"
 #include <vector>
 
+struct BuildNeighborGraphProfile {
+  float timeNeighborCount;
+  float timePrefixScan;
+  float timeBuildIncidenceList;
+};
+
 struct NeighborGraph {
   std::vector<IdxType> neighborCounts;
   std::vector<IdxType> startIndices;
@@ -11,6 +17,7 @@ struct NeighborGraph {
 };
 
 NeighborGraph buildNeighborGraph(
+  BuildNeighborGraphProfile * profile,
   float const * xs, float const * ys, IdxType n,
   IdxType coreThreshold, float r
 );

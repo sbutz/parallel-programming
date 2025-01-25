@@ -30,10 +30,10 @@ static __global__ void prefixScanStep(
   }
 }
 
-IdxType * prefixScanOnDevice(IdxType * dest1, IdxType * dest2, IdxType * src, IdxType n) {
+void prefixScanOnDevice(IdxType ** res, IdxType * dest1, IdxType * dest2, IdxType * src, IdxType n) {
   using std::swap;
 
-  if (n == 0) return dest1;
+  if (n == 0) { *res = dest1; return; }
 
   constexpr unsigned int nThreadsPerBlock = 256;
   dim3 dimBlock(nThreadsPerBlock, 1, 1);
@@ -50,7 +50,8 @@ IdxType * prefixScanOnDevice(IdxType * dest1, IdxType * dest2, IdxType * src, Id
     CUDA_CHECK(cudaGetLastError());
     cudaDeviceSynchronize();
   }
-  return dest1;
+  *res = dest1;
+  return;
 }
 
 void prefixScan(IdxType * dest, IdxType * src, IdxType n) {
@@ -58,7 +59,8 @@ void prefixScan(IdxType * dest, IdxType * src, IdxType n) {
 
   CUDA_CHECK(cudaMalloc(&d_ary, 2 * n * sizeof(IdxType)))
   CUDA_CHECK(cudaMemcpy(d_ary + n, src, n * sizeof(IdxType), cudaMemcpyHostToDevice))
-  auto s = prefixScanOnDevice(d_ary, d_ary + n, d_ary + n, n);
+  IdxType * s;
+  prefixScanOnDevice(&s, d_ary, d_ary + n, d_ary + n, n);
   CUDA_CHECK(cudaMemcpy(dest + 1, s, n * sizeof(IdxType), cudaMemcpyDeviceToHost))
   CUDA_CHECK(cudaMemset(dest, 0, sizeof(IdxType)))
   CUDA_CHECK(cudaFree(d_ary))
