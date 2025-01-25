@@ -151,13 +151,39 @@ void jsonPrintIdxTypeAry(IdxType * ary, size_t n) {
 	printf(" ]");
 }
 
+struct DbscanProfile : BuildNeighborGraphProfile, FindComponentsProfile {
+  float timeTotal;
+};
+
+static auto runDbscan (
+  DbscanProfile * profile,
+  float const * h_x, float const * h_y, IdxType nDataPoints,
+  IdxType coreThreshold, float r
+) {
+	cudaEvent_t start; CUDA_CHECK(cudaEventCreate(&start));
+	cudaEvent_t stop; CUDA_CHECK(cudaEventCreate(&stop));
+	CUDA_CHECK(cudaEventRecord(start));
+
+  auto points = copyPointsToDevice(h_x, h_y, nDataPoints);
+  auto g1 = buildDNeighborGraphOnDevice(
+    profile, points.d_x, points.d_y, points.n, coreThreshold, r
+  );
+  AllComponentsFinder acf(&g1, g1.lenIncidenceAry);
+  acf.findAllComponents(profile, &g1, []{});
+  auto tags = acf.getComponentTagsVector();
+
+	CUDA_CHECK(cudaEventRecord(stop));
+  CUDA_CHECK(cudaEventElapsedTime(&profile->timeTotal, start, stop));
+
+  struct Result {
+    DNeighborGraph g1;
+    std::vector<IdxType> tags;
+  };
+  return Result { std::move(g1), std::move(tags) };
+}
 
 int main (int argc, char * argv []) {
-  struct Profile : BuildNeighborGraphProfile, FindComponentsProfile {
-    float timeTotal;
-  };
-
-  Profile profile = {};
+  DbscanProfile profile = {};
 
   Config config = parseCommandLineArguments(argc, argv);
 
@@ -168,23 +194,10 @@ int main (int argc, char * argv []) {
   auto nDataPoints = a.size();
   if (config.performWarmup) warmup();
 
-	cudaEvent_t start; CUDA_CHECK(cudaEventCreate(&start));
-	cudaEvent_t stop; CUDA_CHECK(cudaEventCreate(&stop));
-	CUDA_CHECK(cudaEventRecord(start));
-
-  auto points = copyPointsToDevice(a.data(), b.data(), nDataPoints);
-  auto g1 = buildDNeighborGraphOnDevice(
-    &profile, points.d_x, points.d_y, points.n, config.n, config.r
-  );
-  AllComponentsFinder acf(&g1, g1.lenIncidenceAry);
-  acf.findAllComponents(&profile, &g1, []{});
-  auto tags = acf.getComponentTagsVector();
-
-	CUDA_CHECK(cudaEventRecord(stop));
-  CUDA_CHECK(cudaEventElapsedTime(&profile.timeTotal, start, stop));
+  auto res = runDbscan(&profile, a.data(), b.data(), nDataPoints, config.n, config.r);
 
   if (config.checkGraph) {
-    auto g = copyDNeighborGraphToHost(g1);
+    auto g = copyDNeighborGraphToHost(res.g1);
 
     auto gCpu = buildNeighborGraphCpu(a.data(), b.data(), nDataPoints, config.n, config.r);
 
@@ -201,7 +214,7 @@ int main (int argc, char * argv []) {
     std::cout << "\"output\": {\n";
       std::cout << "\"x\": "; jsonPrintFloatAry(a.data(), a.size()); std::cout << ",\n";
       std::cout << "\"y\": "; jsonPrintFloatAry(b.data(), b.size()); std::cout << ",\n";
-      std::cout << "\"cluster_id\": "; jsonPrintIdxTypeAry(tags.data(), tags.size()); std::cout << "\n";
+      std::cout << "\"cluster_id\": "; jsonPrintIdxTypeAry(res.tags.data(), res.tags.size()); std::cout << "\n";
     std::cout << "},\n";
     std::cout << "\"profile\": {\n";
       std::cout << "\"timeNeighborCount\": " << profile.timeNeighborCount << ",\n";

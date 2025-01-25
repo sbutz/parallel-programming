@@ -8,7 +8,7 @@
 
 #include <iostream>
 
-DPoints copyPointsToDevice(float * x, float * y, IdxType n) {
+DPoints copyPointsToDevice(float const * x, float const * y, IdxType n) {
   float * d_x, * d_y;
   CUDA_CHECK(cudaMalloc(&d_x, n * sizeof(float)))
   CUDA_CHECK(cudaMalloc(&d_y, n * sizeof(float)))

@@ -22,7 +22,7 @@ struct NeighborGraph {
   std::vector<IdxType> incidenceAry;
 };
 
-DPoints copyPointsToDevice(float * x, float * y, IdxType n);
+DPoints copyPointsToDevice(float const * x, float const * y, IdxType n);
 
 NeighborGraph copyDNeighborGraphToHost(DNeighborGraph const & g);
 
