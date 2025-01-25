@@ -20,19 +20,19 @@ NVIDIADIR=./nvidia
 all: $(OBJDIR)/andrade
 
 $(OBJDIR)/andrade: \
-	$(OBJDIR)/andrade.o $(OBJDIR)/count_neighbors.o $(OBJDIR)/accumulate.o \
+	$(OBJDIR)/andrade.o $(OBJDIR)/count_neighbors.o $(OBJDIR)/prefix_scan.o \
 	$(OBJDIR)/build_incidence_lists.o $(OBJDIR)/build_graph.o $(OBJDIR)/bfs.o
 	$(NVCC) $(GENCODE_FLAGS) -o $@ $(NVCC_LDFLAGS) $^
 
 $(OBJDIR)/andrade.o: $(SRCDIR)/andrade.cc $(SRCDIR)/read_input.h $(SRCDIR)/build_graph.h
 
 $(OBJDIR)/build_graph.o: $(SRCDIR)/build_graph.cc $(SRCDIR)/count_neighbors.h \
-	$(SRCDIR)/accumulate.h $(SRCDIR)/build_incidence_lists.h $(SRCDIR)/cuda_helpers.h \
+	$(SRCDIR)/prefix_scan.h $(SRCDIR)/build_incidence_lists.h $(SRCDIR)/cuda_helpers.h \
 	$(SRCDIR)/build_graph.h
 
 $(OBJDIR)/count_neighbors.o: $(SRCDIR)/count_neighbors.cu $(SRCDIR)/count_neighbors.h $(SRCDIR)/cuda_helpers.h
 
-$(OBJDIR)/accumulate.o: $(SRCDIR)/accumulate.cu $(SRCDIR)/accumulate.h $(SRCDIR)/cuda_helpers.h
+$(OBJDIR)/prefix_scan.o: $(SRCDIR)/prefix_scan.cu $(SRCDIR)/prefix_scan.h $(SRCDIR)/cuda_helpers.h
 
 $(OBJDIR)/build_incidence_lists.o: $(SRCDIR)/build_incidence_lists.cu $(SRCDIR)/build_incidence_lists.h $(SRCDIR)/cuda_helpers.h \
 	$(SRCDIR)/device_vector.h

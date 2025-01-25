@@ -1,6 +1,6 @@
 #include "build_graph.h"
 #include "count_neighbors.h"
-#include "accumulate.h"
+#include "prefix_scan.h"
 #include "build_incidence_lists.h"
 #include "types.h"
 #include "device_vector.h"
@@ -19,21 +19,26 @@ NeighborGraph buildNeighborGraph(
 
   DeviceVector<IdxType> d_cumulative (UninitializedDeviceVectorTag {}, 2 * (n + 1));
   CUDA_CHECK(cudaMemset(d_cumulative.data(), 0, sizeof(IdxType)));
-  CUDA_CHECK(cudaMemcpy(d_cumulative.data() + 1, d_dcounts.data(), n * sizeof(IdxType), cudaMemcpyDeviceToDevice));
-  auto s = accumulateOnDevice(d_cumulative.data(), n + 1);
+  CUDA_CHECK(cudaMemset(d_cumulative.data() + n + 1, 0, sizeof(IdxType)));
+  //CUDA_CHECK(cudaMemcpy(d_cumulative.data() + 1, d_dcounts.data(), n * sizeof(IdxType), cudaMemcpyDeviceToDevice));
+  auto s = prefixScanOnDevice(
+    d_cumulative.data() + 1,
+    d_cumulative.data() + n + 2,
+    d_dcounts.data(),
+    n
+  );
 
   IdxType lenIncidenceAry;
-  CUDA_CHECK(cudaMemcpy(&lenIncidenceAry, &d_cumulative.data()[s+n], sizeof(IdxType), cudaMemcpyDeviceToHost));
-
+  CUDA_CHECK(cudaMemcpy(&lenIncidenceAry, s + n - 1, sizeof(IdxType), cudaMemcpyDeviceToHost));
   DeviceVector<IdxType> d_incidenceAry (UninitializedDeviceVectorTag{}, lenIncidenceAry);
-  buildIncidenceListsOnDevice(d_incidenceAry.data(), d_xs.data(), d_ys.data(), &d_cumulative.data()[s], n, r);
+  buildIncidenceListsOnDevice(d_incidenceAry.data(), d_xs.data(), d_ys.data(), s - 1, n, r);
 
   std::vector<IdxType> neighborCounts(n);
   std::vector<IdxType> startIndices(n + 1);
   std::vector<IdxType> incidenceAry(lenIncidenceAry);
 
   d_dcounts.memcpyToHost(neighborCounts.data());
-  CUDA_CHECK(cudaMemcpy(startIndices.data(), d_cumulative.data(), (n + 1) * sizeof(IdxType), cudaMemcpyDeviceToHost));
+  CUDA_CHECK(cudaMemcpy(startIndices.data(), s - 1, (n + 1) * sizeof(IdxType), cudaMemcpyDeviceToHost));
   d_incidenceAry.memcpyToHost(incidenceAry.data());
 
   return { std::move(neighborCounts), std::move(startIndices), std::move(incidenceAry) };
@@ -48,7 +53,7 @@ NeighborGraph buildNeighborGraphCpu(
 std::cerr << "X";
 
   std::vector<IdxType> cumulative (n + 1);
-  accumulateCpu(cumulative.data(), neighborCounts.data(), n);
+  prefixScanCpu(cumulative.data(), neighborCounts.data(), n);
 
 std::cerr << "X";
   
