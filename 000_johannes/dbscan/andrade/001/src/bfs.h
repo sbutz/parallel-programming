@@ -39,11 +39,15 @@ struct ComponentFinder {
 
 struct AllComponentsFinder;
 
+template <int FindNextUnvisitedPolicyKey>
 void doFindAllComponents(
   FindComponentsProfile * profile,
   AllComponentsFinder *, DNeighborGraph const *,
   void (*callback) (void *) = nullptr, void * callbackData = nullptr
 );
+
+constexpr int findNextUnivisitedNaivePolicy = 1;
+constexpr int findNextUnivisitedSuccessivePolicy = 2;
 
 struct AllComponentsFinder {
   ComponentFinder cf;
@@ -55,9 +59,9 @@ struct AllComponentsFinder {
   AllComponentsFinder(AllComponentsFinder const &) = delete;
   ~AllComponentsFinder();
 
-  template <typename Callback>
+  template <int FindNextUnvisitedPolicyKey, typename Callback>
   void findAllComponents(FindComponentsProfile * profile, DNeighborGraph const * graph, Callback && callback = []{}) {
-    doFindAllComponents(profile, this, graph,
+    doFindAllComponents<FindNextUnvisitedPolicyKey>(profile, this, graph,
       [](void * callback) { (*(Callback *)callback) (); },
       &callback
     );

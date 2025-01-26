@@ -5,15 +5,6 @@
 #include <cuda_runtime.h>
 #include <iostream>
 
-template <class T>
-void printArray(T * ary, size_t n) {
-    if (n == 0) { std::cout << "[ ]\n"; return; }
-    std::cout << "[ " << ary[0];
-    for (size_t i = 1; i < n; ++i) std::cout << ", " << ary[i];
-    std::cout << " ]\n";
-}
-
-
 DeviceGraph::DeviceGraph(IdxType nVertices, IdxType lenDestinations, IdxType * d_startIndices, IdxType * d_incidenceAry) {
     g.nVertices = nVertices;
     CUDA_CHECK(cudaMalloc(&g.d_startIndices, (nVertices + 1) * sizeof(IdxType)))
@@ -133,23 +124,6 @@ static __global__ void kernel_markNonCore(
     }    
 }
 
-static __global__ void kernel_findUnvisited(
-    IdxType * outBuffer,
-    IdxType * d_visited,
-    IdxType nVertices,
-    IdxType startPos
-) {
-    unsigned int tid = blockDim.x * blockIdx.x + threadIdx.x;
-
-    // TODO: This is bad. We should start at startPos and finish early when vertex has been found.
-    if (tid < nVertices) {
-        if (!d_visited[tid]) {
-            outBuffer[0] = 1; // true
-            outBuffer[1] = tid;
-        }
-    }    
-}
-
 AllComponentsFinder::AllComponentsFinder(DNeighborGraph const * graph, std::size_t maxFrontierSize)
 : cf (graph, maxFrontierSize), nextFreeTag(2), nextStartIndex(0) {
     CUDA_CHECK(cudaMalloc(&this->d_resultBuffer, 2 * sizeof(IdxType)))
@@ -179,26 +153,120 @@ static void markNonCore(AllComponentsFinder * acf, DNeighborGraph const * graph)
     CUDA_CHECK(cudaGetLastError())
 }
 
-static auto findNextUnvisited(AllComponentsFinder * acf, DNeighborGraph const * graph) {
-    constexpr int threadsPerBlock = 128;
-    CUDA_CHECK(cudaMemset(acf->d_resultBuffer, 0, 2 * sizeof(IdxType)))
+static __global__ void kernel_findUnvisitedNaive(
+    IdxType * outBuffer,
+    IdxType * d_visited,
+    IdxType nVertices,
+    IdxType startPos
+) {
+    unsigned int tid = blockDim.x * blockIdx.x + threadIdx.x;
 
-    kernel_findUnvisited <<<
-        dim3((graph->nVertices + threadsPerBlock - 1) / threadsPerBlock),
-        dim3(threadsPerBlock)
-    >>> (acf->d_resultBuffer, acf->cf.d_visited, graph->nVertices, 0);
-    cudaDeviceSynchronize();
-
-    IdxType localBuffer [2];
-    CUDA_CHECK(cudaMemcpy(localBuffer, acf->d_resultBuffer, 2 * sizeof(IdxType), cudaMemcpyDeviceToHost))
-
-    struct Result {
-        bool wasFound;
-        IdxType idx;
-    };
-    return Result{!!localBuffer[0], localBuffer[1]};
+    // TODO: This is bad. We should start at startPos and finish early when vertex has been found.
+    if (tid < nVertices) {
+        if (!d_visited[tid]) {
+            outBuffer[0] = 1; // true
+            outBuffer[1] = tid;
+        }
+    }    
 }
 
+struct FindNextUnvisited_NaivePolicy {
+
+    static auto findNextUnvisited(
+        IdxType * d_resultBuffer, IdxType * d_visited, IdxType nVertices, IdxType startIdx
+    ) {
+        constexpr int threadsPerBlock = 128;
+        CUDA_CHECK(cudaMemset(d_resultBuffer, 0, 2 * sizeof(IdxType)))
+
+        kernel_findUnvisitedNaive <<<
+            dim3((nVertices + threadsPerBlock - 1) / threadsPerBlock),
+            dim3(threadsPerBlock)
+        >>> (d_resultBuffer, d_visited, nVertices, startIdx);
+        cudaDeviceSynchronize();
+
+        IdxType localBuffer [2];
+        CUDA_CHECK(cudaMemcpy(localBuffer, d_resultBuffer, 2 * sizeof(IdxType), cudaMemcpyDeviceToHost))
+
+        struct Result {
+            bool wasFound;
+            IdxType idx;
+        };
+        return Result{!!localBuffer[0], localBuffer[1]};
+    }
+};
+
+static __global__ void kernel_findUnvisitedSuccessive(
+    IdxType * outBuffer,
+    IdxType * d_visited,
+    IdxType nVertices,
+    IdxType startPos,
+    int nIterations
+) {
+    unsigned int stride = gridDim.x * blockDim.x;
+    unsigned int mask = ~(stride - 1);
+    unsigned int tid = blockDim.x * blockIdx.x + threadIdx.x;
+    unsigned int idx = startPos + tid;
+    for (int i = 0; i < nIterations; ++i) {
+        if (idx < nVertices) {
+            if (!d_visited[idx]) {
+                outBuffer[0] = 1; // true
+                outBuffer[1] = idx;
+                break;
+            }
+        }
+        if ((idx & mask) >= (nVertices & mask)) break;
+        idx += stride;
+    }
+}
+
+struct FindNextUnvisited_SuccessivePolicy {
+
+    static auto findNextUnvisited(
+        IdxType * d_resultBuffer, IdxType * d_visited, IdxType nVertices, IdxType startIdx
+    ) {
+        constexpr int threadsPerBlock = 128;
+        constexpr int blocks = 6;
+        constexpr IdxType stride = blocks * threadsPerBlock;
+        constexpr int nIterations = 10;
+        constexpr IdxType mask = (IdxType) ~((IdxType)128 / sizeof(IdxType) - (IdxType)1);
+        static_assert(mask == 0xffffffe0, "");
+        //static_assert(stride == 0x300, "");
+        static_assert((stride & mask) == stride, "");
+
+        CUDA_CHECK(cudaMemset(d_resultBuffer, 0, 2 * sizeof(IdxType)))
+
+        if (startIdx > 0) --startIdx;
+        startIdx = startIdx & mask;
+        IdxType localBuffer [2];
+        for (;;) {
+            kernel_findUnvisitedSuccessive <<<
+                dim3(blocks), dim3(threadsPerBlock)
+            >>> (d_resultBuffer, d_visited, nVertices, startIdx, nIterations);
+            cudaDeviceSynchronize();
+
+            CUDA_CHECK(cudaMemcpy(localBuffer, d_resultBuffer, 2 * sizeof(IdxType), cudaMemcpyDeviceToHost))
+
+            if (!!localBuffer[0]) break; // found one
+            if ((nVertices & mask) <= startIdx) break; // no more work to do
+            startIdx += (nIterations * stride);
+        }
+
+        struct Result {
+            bool wasFound;
+            IdxType idx;
+        };
+        return Result{!!localBuffer[0], localBuffer[1]};
+    }
+};
+
+
+template <int FindNextUnvisitedPolicyKey> struct FindNextUnvisitedPolicy;
+template <> struct FindNextUnvisitedPolicy<findNextUnivisitedNaivePolicy>
+: FindNextUnvisited_NaivePolicy {};
+template <> struct FindNextUnvisitedPolicy<findNextUnivisitedSuccessivePolicy>
+: FindNextUnvisited_SuccessivePolicy {};
+
+template <int FindNextUnvisitedPolicyKey>
 void doFindAllComponents(
     FindComponentsProfile * profile,
     AllComponentsFinder * acf, DNeighborGraph const * graph,
@@ -207,11 +275,20 @@ void doFindAllComponents(
     profile->timeMarkNonCore = runAndMeasureCuda(markNonCore, acf, graph);
     profile->timeFindComponents = runAndMeasureCuda([&]{
         for (;;) {
-            auto nextUnvisited = findNextUnvisited(acf, graph);
+            IdxType startIdx = 0;
+            auto nextUnvisited = FindNextUnvisitedPolicy<FindNextUnvisitedPolicyKey>::findNextUnvisited(
+                acf->d_resultBuffer, acf->cf.d_visited, graph->nVertices, startIdx
+            );
             if (!nextUnvisited.wasFound) return;
             acf->cf.findComponent(graph, nextUnvisited.idx, acf->nextFreeTag, callback, callbackData);
+            startIdx = nextUnvisited.idx + 1;
             ++acf->nextFreeTag;
         }
     });
 }
 
+static void forceInstantiation() __attribute__ ((unused));
+static void forceInstantiation() {
+    doFindAllComponents<findNextUnivisitedNaivePolicy> (nullptr, nullptr, nullptr, nullptr, nullptr);
+    doFindAllComponents<findNextUnivisitedSuccessivePolicy> (nullptr, nullptr, nullptr, nullptr, nullptr);
+}
