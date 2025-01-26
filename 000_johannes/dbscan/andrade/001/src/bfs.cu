@@ -254,11 +254,101 @@ struct FindNextUnvisited_SuccessivePolicy {
 };
 
 
+static __global__ void kernel_findUnvisitedSuccessiveMultWarp(
+    IdxType * outBuffer,
+    IdxType * d_visited,
+    IdxType nVertices,
+    IdxType startPos
+) {
+    constexpr unsigned int wrp = 32;
+    constexpr int logWrp = 5;
+    constexpr unsigned int stride = 4 * wrp;
+    constexpr int logStride = 7;
+    constexpr int warpsPerBlock = stride / wrp;
+
+    __shared__ unsigned int contributions[warpsPerBlock];
+
+    constexpr IdxType maxIdxType = (IdxType)0 - (IdxType)1;
+
+    //unsigned int stride = blockDim.x;
+    unsigned int tid = threadIdx.x;
+    unsigned int wid = threadIdx.x / wrp;
+    unsigned int lane = threadIdx.x % wrp;
+
+    unsigned int idx = (startPos & ~(wrp - 1)) + tid;
+
+    IdxType contribution;
+    for (;;) {
+        contribution = idx < startPos || idx > nVertices || !!d_visited[idx] ?
+            maxIdxType : idx;
+
+        #pragma unroll
+        for (int delta = 1; delta < wrp; delta <<= 1) {
+            auto other = __shfl_down_sync(0xffffffff, contribution, delta);
+            if (other < contribution) contribution = other;
+        }
+
+        if (lane == 0) contributions[wid] = contribution;
+
+        __syncthreads();
+
+        if (wid == 0) {
+            contribution = tid < warpsPerBlock ? contributions[tid] : maxIdxType;
+
+            #pragma unroll
+            for (int delta = 1; delta < warpsPerBlock; delta <<= 1) {
+                auto other = __shfl_down_sync(0xffffffff, contribution, delta);
+                if (other < contribution) contribution = other;
+            }
+
+            if (tid == 0) contributions[0] = contribution;
+        }
+
+        __syncthreads();
+
+        contribution = contributions[0];
+
+        if (idx - tid > nVertices - tid || contribution == maxIdxType) break;
+
+        idx += stride;
+    };
+
+    if (tid == 0) *outBuffer = contribution;
+}
+
+struct FindNextUnvisited_SuccessiveMultWarpPolicy {
+
+    static auto findNextUnvisited(
+        IdxType * d_resultBuffer, IdxType * d_visited, IdxType nVertices, IdxType startIdx
+    ) {
+        constexpr int threadsPerBlock = 128;
+        constexpr int blocks = 1;
+        constexpr IdxType maxIdxType = (IdxType)0 - (IdxType)1;
+
+        IdxType localBuffer;
+        kernel_findUnvisitedSuccessive <<<
+            dim3(blocks), dim3(threadsPerBlock)
+        >>> (d_resultBuffer, d_visited, nVertices, startIdx);
+        cudaDeviceSynchronize();
+
+        CUDA_CHECK(cudaMemcpy(&localBuffer, d_resultBuffer, sizeof(IdxType), cudaMemcpyDeviceToHost))
+
+        struct Result {
+            bool wasFound;
+            IdxType idx;
+        };
+        return Result{localBuffer != maxIdxType, localBuffer};
+    }
+};
+
+
 template <int FindNextUnvisitedPolicyKey> struct FindNextUnvisitedPolicy;
 template <> struct FindNextUnvisitedPolicy<findNextUnivisitedNaivePolicy>
 : FindNextUnvisited_NaivePolicy {};
 template <> struct FindNextUnvisitedPolicy<findNextUnivisitedSuccessivePolicy>
 : FindNextUnvisited_SuccessivePolicy {};
+template <> struct FindNextUnvisitedPolicy<findNextUnivisitedSuccessiveMultWarpPolicy>
+: FindNextUnvisited_SuccessiveMultWarpPolicy {};
 
 template <int FindNextUnvisitedPolicyKey>
 void doFindAllComponents(
@@ -285,4 +375,5 @@ static void forceInstantiation() __attribute__ ((unused));
 static void forceInstantiation() {
     doFindAllComponents<findNextUnivisitedNaivePolicy> (nullptr, nullptr, nullptr, nullptr, nullptr);
     doFindAllComponents<findNextUnivisitedSuccessivePolicy> (nullptr, nullptr, nullptr, nullptr, nullptr);
+    doFindAllComponents<findNextUnivisitedSuccessiveMultWarpPolicy> (nullptr, nullptr, nullptr, nullptr, nullptr);
 }
