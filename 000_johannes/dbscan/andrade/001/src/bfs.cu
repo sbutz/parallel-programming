@@ -199,24 +199,33 @@ static __global__ void kernel_findUnvisitedSuccessive(
     IdxType * outBuffer,
     IdxType * d_visited,
     IdxType nVertices,
-    IdxType startPos,
-    int nIterations
+    IdxType startPos
 ) {
-    unsigned int stride = gridDim.x * blockDim.x;
-    unsigned int mask = ~(stride - 1);
-    unsigned int tid = blockDim.x * blockIdx.x + threadIdx.x;
-    unsigned int idx = startPos + tid;
-    for (int i = 0; i < nIterations; ++i) {
-        if (idx < nVertices) {
-            if (!d_visited[idx]) {
-                outBuffer[0] = 1; // true
-                outBuffer[1] = idx;
-                break;
-            }
+    constexpr unsigned int wrp = 32;
+    constexpr int logWrp = 5;
+    constexpr IdxType maxIdxType = (IdxType)0 - (IdxType)1;
+    unsigned int tid = threadIdx.x;
+    unsigned int idx = (startPos & ~(wrp - 1)) + tid;
+
+    IdxType contribution;
+    for (;;) {
+        contribution = idx < startPos || idx > nVertices || !!d_visited[idx] ?
+            maxIdxType : idx;
+
+        #pragma unroll
+        for (int delta = 1; delta < wrp; delta <<= 1) {
+            auto other = __shfl_down_sync(0xffffffff, contribution, delta);
+            if (other < contribution) contribution = other;
         }
-        if ((idx & mask) >= (nVertices & mask)) break;
-        idx += stride;
-    }
+
+        contribution = __shfl_sync(0xffffffff, contribution, 0);
+
+        if ((idx >> logWrp) == (nVertices >> logWrp) || contribution == maxIdxType) break;
+
+        idx += wrp;
+    };
+
+    if (tid == 0) *outBuffer = contribution;
 }
 
 struct FindNextUnvisited_SuccessivePolicy {
@@ -224,38 +233,23 @@ struct FindNextUnvisited_SuccessivePolicy {
     static auto findNextUnvisited(
         IdxType * d_resultBuffer, IdxType * d_visited, IdxType nVertices, IdxType startIdx
     ) {
-        constexpr int threadsPerBlock = 128;
-        constexpr int blocks = 6;
-        constexpr IdxType stride = blocks * threadsPerBlock;
-        constexpr int nIterations = 10;
-        constexpr IdxType mask = (IdxType) ~((IdxType)128 / sizeof(IdxType) - (IdxType)1);
-        static_assert(mask == 0xffffffe0, "");
-        //static_assert(stride == 0x300, "");
-        static_assert((stride & mask) == stride, "");
+        constexpr int threadsPerBlock = 32;
+        constexpr int blocks = 1;
+        constexpr IdxType maxIdxType = (IdxType)0 - (IdxType)1;
 
-        CUDA_CHECK(cudaMemset(d_resultBuffer, 0, 2 * sizeof(IdxType)))
+        IdxType localBuffer;
+        kernel_findUnvisitedSuccessive <<<
+            dim3(blocks), dim3(threadsPerBlock)
+        >>> (d_resultBuffer, d_visited, nVertices, startIdx);
+        cudaDeviceSynchronize();
 
-        if (startIdx > 0) --startIdx;
-        startIdx = startIdx & mask;
-        IdxType localBuffer [2];
-        for (;;) {
-            kernel_findUnvisitedSuccessive <<<
-                dim3(blocks), dim3(threadsPerBlock)
-            >>> (d_resultBuffer, d_visited, nVertices, startIdx, nIterations);
-            cudaDeviceSynchronize();
-
-            CUDA_CHECK(cudaMemcpy(localBuffer, d_resultBuffer, 2 * sizeof(IdxType), cudaMemcpyDeviceToHost))
-
-            if (!!localBuffer[0]) break; // found one
-            if ((nVertices & mask) <= startIdx) break; // no more work to do
-            startIdx += (nIterations * stride);
-        }
+        CUDA_CHECK(cudaMemcpy(&localBuffer, d_resultBuffer, sizeof(IdxType), cudaMemcpyDeviceToHost))
 
         struct Result {
             bool wasFound;
             IdxType idx;
         };
-        return Result{!!localBuffer[0], localBuffer[1]};
+        return Result{localBuffer != maxIdxType, localBuffer};
     }
 };
 
