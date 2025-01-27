@@ -213,7 +213,7 @@ static __global__ void kernel_findUnvisitedSuccessive(
 
     IdxType contribution;
     for (;;) {
-        contribution = idx < startPos || idx > nVertices || !!d_visited[idx] ?
+        contribution = idx < startPos || idx >= nVertices || !!d_visited[idx] ?
             maxIdxType : idx;
 
         #pragma unroll
@@ -224,7 +224,7 @@ static __global__ void kernel_findUnvisitedSuccessive(
 
         contribution = __shfl_sync(0xffffffff, contribution, 0);
 
-        if ((idx >> logWrp) == (nVertices >> logWrp) || contribution == maxIdxType) break;
+        if ((idx >> logWrp) == (nVertices >> logWrp) || contribution != maxIdxType) break;
 
         idx += wrp;
     };
@@ -267,24 +267,30 @@ static __global__ void kernel_findUnvisitedSuccessiveSimplified(
     IdxType startPos
 ) {
     constexpr unsigned int wrp = 32;
-    constexpr int logWrp = 5;
+    constexpr unsigned int wrpMask = ~(wrp - 1);
     constexpr IdxType maxIdxType = (IdxType)0 - (IdxType)1;
     unsigned int tid = threadIdx.x;
-    unsigned int idx = (startPos & ~(wrp - 1)) + tid;
+
+    IdxType strideStartIdx = startPos & wrpMask;
+    IdxType strideStopIdx = (nVertices - 1) & wrpMask;
 
     int unvisitedMask;
     for (;;) {
+        IdxType idx = strideStartIdx + tid;
+        int visited = idx < startPos || idx >= nVertices || !!d_visited[idx];
+        unvisitedMask = __ballot_sync(0xffffffff, !visited);
 
-        unvisitedMask = __ballot_sync(0xffffffff, idx >= startPos && idx < nVertices && !d_visited[idx]);
-
-        if ((idx >> logWrp) == (nVertices >> logWrp) || unvisitedMask != 0) break;
-
-        idx += wrp;
+        if (unvisitedMask != 0) {
+            if (tid == 0) *outBuffer = strideStartIdx + __ffs(unvisitedMask) - 1;
+            break;
+        }
+        if (strideStartIdx >= strideStopIdx) {
+            if (tid == 0) *outBuffer = maxIdxType;
+            break;
+        }
+        strideStartIdx += wrp;
     };
 
-    if (tid == 0) {
-        *outBuffer = unvisitedMask ? (idx & ~(wrp - 1)) + __ffs(unvisitedMask) - 1 : maxIdxType;
-    }
 }
 
 template <>
@@ -293,9 +299,16 @@ struct FindNextUnvisitedPolicy<findNextUnivisitedSuccessiveSimplifiedPolicy> {
     static auto findNextUnvisited(
         IdxType * d_resultBuffer, IdxType * d_visited, IdxType nVertices, IdxType startIdx
     ) {
+        struct Result {
+            bool wasFound;
+            IdxType idx;
+        };
+
         constexpr int threadsPerBlock = 32;
         constexpr int blocks = 1;
         constexpr IdxType maxIdxType = (IdxType)0 - (IdxType)1;
+
+        if (startIdx >= nVertices) return Result{false, 0};
 
         IdxType localBuffer;
         kernel_findUnvisitedSuccessiveSimplified <<<
@@ -305,10 +318,6 @@ struct FindNextUnvisitedPolicy<findNextUnivisitedSuccessiveSimplifiedPolicy> {
 
         CUDA_CHECK(cudaMemcpy(&localBuffer, d_resultBuffer, sizeof(IdxType), cudaMemcpyDeviceToHost))
 
-        struct Result {
-            bool wasFound;
-            IdxType idx;
-        };
         return Result{localBuffer != maxIdxType, localBuffer};
     }
 };
@@ -320,9 +329,7 @@ static __global__ void kernel_findUnvisitedSuccessiveMultWarp(
     IdxType startPos
 ) {
     constexpr unsigned int wrp = 32;
-    constexpr int logWrp = 5;
-    constexpr unsigned int stride = 4 * wrp;
-    constexpr int logStride = 7;
+    constexpr unsigned int stride = 2 * wrp;
     constexpr unsigned int strideStartMask = ~(stride - 1);
     constexpr int warpsPerBlock = stride / wrp;
 
@@ -339,17 +346,11 @@ static __global__ void kernel_findUnvisitedSuccessiveMultWarp(
 
     IdxType contribution;
     for (;;) {
+        // ! TODO: this may overflow
         IdxType idx = strideStartIdx + tid;
-        contribution = idx < startPos || idx > nVertices || !!d_visited[idx] ?
-            maxIdxType : idx;
+        int unvisitedMask = __ballot_sync(0xffffffff, idx >= startPos && idx < nVertices && !d_visited[idx]);
 
-        #pragma unroll
-        for (int delta = 1; delta < wrp; delta <<= 1) {
-            auto other = __shfl_down_sync(0xffffffff, contribution, delta);
-            if (other < contribution) contribution = other;
-        }
-
-        if (lane == 0) contributions[wid] = contribution;
+        if (lane == 0) contributions[wid] = unvisitedMask ? strideStartIdx + wrp * wid + __ffs(unvisitedMask) - 1 : maxIdxType;
 
         __syncthreads();
 
@@ -369,7 +370,7 @@ static __global__ void kernel_findUnvisitedSuccessiveMultWarp(
 
         contribution = contributions[0];
 
-        if (strideStartIdx >= (nVertices & strideStartMask) || contribution == maxIdxType) break;
+        if (strideStartIdx >= (nVertices & strideStartMask) || contribution != maxIdxType) break;
 
         strideStartIdx += stride;
     };
@@ -385,7 +386,7 @@ struct FindNextUnvisitedPolicy<findNextUnivisitedSuccessiveMultWarpPolicy> {
     static auto findNextUnvisited(
         IdxType * d_resultBuffer, IdxType * d_visited, IdxType nVertices, IdxType startIdx
     ) {
-        constexpr int threadsPerBlock = 128;
+        constexpr int threadsPerBlock = 2 * 32;
         constexpr int blocks = 1;
         constexpr IdxType maxIdxType = (IdxType)0 - (IdxType)1;
 
@@ -393,6 +394,7 @@ struct FindNextUnvisitedPolicy<findNextUnivisitedSuccessiveMultWarpPolicy> {
         kernel_findUnvisitedSuccessiveMultWarp <<<
             dim3(blocks), dim3(threadsPerBlock)
         >>> (d_resultBuffer, d_visited, nVertices, startIdx);
+        CUDA_CHECK(cudaGetLastError())
         cudaDeviceSynchronize();
 
         CUDA_CHECK(cudaMemcpy(&localBuffer, d_resultBuffer, sizeof(IdxType), cudaMemcpyDeviceToHost))
@@ -415,15 +417,17 @@ void doFindAllComponents(
 ) {
     profile->timeMarkNonCore = runAndMeasureCuda(markNonCore, acf, graph);
     profile->timeFindComponents = runAndMeasureCuda([&]{
+        IdxType nIterations = 0;
+        IdxType startIdx = 1;
         for (;;) {
-            IdxType startIdx = 0;
             auto nextUnvisited = FindNextUnvisitedPolicy<FindNextUnvisitedPolicyKey>::findNextUnvisited(
                 acf->d_resultBuffer, acf->cf.d_visited, graph->nVertices, startIdx
             );
-            if (!nextUnvisited.wasFound) return;
+            if (!nextUnvisited.wasFound) break;
             acf->cf.findComponent(graph, nextUnvisited.idx, acf->nextFreeTag, callback, callbackData);
             startIdx = nextUnvisited.idx + 1;
             ++acf->nextFreeTag;
+            ++nIterations;
         }
     });
 }

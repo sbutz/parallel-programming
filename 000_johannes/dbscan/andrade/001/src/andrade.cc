@@ -169,7 +169,7 @@ static auto runDbscan (
     profile, points.d_x, points.d_y, points.n, coreThreshold, r
   );
   AllComponentsFinder acf(&g1, g1.lenIncidenceAry);
-  acf.findAllComponents<findNextUnivisitedSuccessiveMultWarpPolicy>(profile, &g1, []{});
+  acf.findAllComponents<findNextUnivisitedSuccessiveSimplifiedPolicy>(profile, &g1, []{});
   auto tags = acf.getComponentTagsVector();
 
 	CUDA_CHECK(cudaEventRecord(stop));
