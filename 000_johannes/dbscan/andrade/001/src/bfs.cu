@@ -267,30 +267,16 @@ static __global__ void kernel_findUnvisitedSuccessiveSimplified(
     IdxType startPos
 ) {
     constexpr unsigned int wrp = 32;
-    constexpr unsigned int wrpMask = ~(wrp - 1);
-    constexpr IdxType maxIdxType = (IdxType)0 - (IdxType)1;
-    unsigned int tid = threadIdx.x;
-
-    IdxType strideStartIdx = startPos & wrpMask;
-    IdxType strideStopIdx = (nVertices - 1) & wrpMask;
-
-    int unvisitedMask;
-    for (;;) {
-        IdxType idx = strideStartIdx + tid;
-        int visited = idx < startPos || idx >= nVertices || !!d_visited[idx];
-        unvisitedMask = __ballot_sync(0xffffffff, !visited);
-
+    IdxType result = (IdxType)-1;
+    for (IdxType strideIdx = startPos / wrp; strideIdx <= ((nVertices - 1) / wrp); ++strideIdx) {
+        IdxType idx = strideIdx * wrp + threadIdx.x;
+        int unvisitedMask = __ballot_sync(0xffffffff, idx >= startPos && idx < nVertices && !d_visited[idx]);
         if (unvisitedMask != 0) {
-            if (tid == 0) *outBuffer = strideStartIdx + __ffs(unvisitedMask) - 1;
+            result = strideIdx * wrp + __ffs(unvisitedMask) - 1;
             break;
         }
-        if (strideStartIdx >= strideStopIdx) {
-            if (tid == 0) *outBuffer = maxIdxType;
-            break;
-        }
-        strideStartIdx += wrp;
-    };
-
+    }
+    if (threadIdx.x == 0) *outBuffer = result;
 }
 
 template <>
