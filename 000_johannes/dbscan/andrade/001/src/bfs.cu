@@ -170,7 +170,11 @@ static __global__ void kernel_findUnvisitedNaive(
     }    
 }
 
-struct FindNextUnvisited_NaivePolicy {
+
+template <int FindNextUnvisitedPolicyKey> struct FindNextUnvisitedPolicy;
+
+template <>
+struct FindNextUnvisitedPolicy<findNextUnivisitedNaivePolicy> {
 
     static auto findNextUnvisited(
         IdxType * d_resultBuffer, IdxType * d_visited, IdxType nVertices, IdxType startIdx
@@ -228,7 +232,8 @@ static __global__ void kernel_findUnvisitedSuccessive(
     if (tid == 0) *outBuffer = contribution;
 }
 
-struct FindNextUnvisited_SuccessivePolicy {
+template <>
+struct FindNextUnvisitedPolicy<findNextUnivisitedSuccessivePolicy> {
 
     static auto findNextUnvisited(
         IdxType * d_resultBuffer, IdxType * d_visited, IdxType nVertices, IdxType startIdx
@@ -282,7 +287,8 @@ static __global__ void kernel_findUnvisitedSuccessiveSimplified(
     }
 }
 
-struct FindNextUnvisited_SuccessiveSimplifiedPolicy {
+template <>
+struct FindNextUnvisitedPolicy<findNextUnivisitedSuccessiveSimplifiedPolicy> {
 
     static auto findNextUnvisited(
         IdxType * d_resultBuffer, IdxType * d_visited, IdxType nVertices, IdxType startIdx
@@ -317,6 +323,7 @@ static __global__ void kernel_findUnvisitedSuccessiveMultWarp(
     constexpr int logWrp = 5;
     constexpr unsigned int stride = 4 * wrp;
     constexpr int logStride = 7;
+    constexpr unsigned int strideStartMask = ~(stride - 1);
     constexpr int warpsPerBlock = stride / wrp;
 
     __shared__ unsigned int contributions[warpsPerBlock];
@@ -328,10 +335,11 @@ static __global__ void kernel_findUnvisitedSuccessiveMultWarp(
     unsigned int wid = threadIdx.x / wrp;
     unsigned int lane = threadIdx.x % wrp;
 
-    unsigned int idx = (startPos & ~(wrp - 1)) + tid;
+    IdxType strideStartIdx = (startPos & ~(wrp - 1));
 
     IdxType contribution;
     for (;;) {
+        IdxType idx = strideStartIdx + tid;
         contribution = idx < startPos || idx > nVertices || !!d_visited[idx] ?
             maxIdxType : idx;
 
@@ -361,9 +369,9 @@ static __global__ void kernel_findUnvisitedSuccessiveMultWarp(
 
         contribution = contributions[0];
 
-        if (idx - tid > nVertices - tid || contribution == maxIdxType) break;
+        if (strideStartIdx >= (nVertices & strideStartMask) || contribution == maxIdxType) break;
 
-        idx += stride;
+        strideStartIdx += stride;
     };
 
     if (tid == 0) *outBuffer = contribution;
@@ -371,8 +379,8 @@ static __global__ void kernel_findUnvisitedSuccessiveMultWarp(
 
 
 
-
-struct FindNextUnvisited_SuccessiveMultWarpPolicy {
+template <>
+struct FindNextUnvisitedPolicy<findNextUnivisitedSuccessiveMultWarpPolicy> {
 
     static auto findNextUnvisited(
         IdxType * d_resultBuffer, IdxType * d_visited, IdxType nVertices, IdxType startIdx
@@ -382,7 +390,7 @@ struct FindNextUnvisited_SuccessiveMultWarpPolicy {
         constexpr IdxType maxIdxType = (IdxType)0 - (IdxType)1;
 
         IdxType localBuffer;
-        kernel_findUnvisitedSuccessive <<<
+        kernel_findUnvisitedSuccessiveMultWarp <<<
             dim3(blocks), dim3(threadsPerBlock)
         >>> (d_resultBuffer, d_visited, nVertices, startIdx);
         cudaDeviceSynchronize();
@@ -398,15 +406,6 @@ struct FindNextUnvisited_SuccessiveMultWarpPolicy {
 };
 
 
-template <int FindNextUnvisitedPolicyKey> struct FindNextUnvisitedPolicy;
-template <> struct FindNextUnvisitedPolicy<findNextUnivisitedNaivePolicy>
-: FindNextUnvisited_NaivePolicy {};
-template <> struct FindNextUnvisitedPolicy<findNextUnivisitedSuccessivePolicy>
-: FindNextUnvisited_SuccessivePolicy {};
-template <> struct FindNextUnvisitedPolicy<findNextUnivisitedSuccessiveMultWarpPolicy>
-: FindNextUnvisited_SuccessiveMultWarpPolicy {};
-template <> struct FindNextUnvisitedPolicy<findNextUnivisitedSuccessiveSimplifiedPolicy>
-: FindNextUnvisited_SuccessiveSimplifiedPolicy {};
 
 template <int FindNextUnvisitedPolicyKey>
 void doFindAllComponents(
