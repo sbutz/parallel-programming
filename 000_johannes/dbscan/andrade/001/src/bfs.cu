@@ -254,6 +254,59 @@ struct FindNextUnvisited_SuccessivePolicy {
 };
 
 
+
+static __global__ void kernel_findUnvisitedSuccessiveSimplified(
+    IdxType * outBuffer,
+    IdxType * d_visited,
+    IdxType nVertices,
+    IdxType startPos
+) {
+    constexpr unsigned int wrp = 32;
+    constexpr int logWrp = 5;
+    constexpr IdxType maxIdxType = (IdxType)0 - (IdxType)1;
+    unsigned int tid = threadIdx.x;
+    unsigned int idx = (startPos & ~(wrp - 1)) + tid;
+
+    int unvisitedMask;
+    for (;;) {
+
+        unvisitedMask = __ballot_sync(0xffffffff, idx >= startPos && idx < nVertices && !d_visited[idx]);
+
+        if ((idx >> logWrp) == (nVertices >> logWrp) || unvisitedMask != 0) break;
+
+        idx += wrp;
+    };
+
+    if (tid == 0) {
+        *outBuffer = unvisitedMask ? (idx & ~(wrp - 1)) + __ffs(unvisitedMask) - 1 : maxIdxType;
+    }
+}
+
+struct FindNextUnvisited_SuccessiveSimplifiedPolicy {
+
+    static auto findNextUnvisited(
+        IdxType * d_resultBuffer, IdxType * d_visited, IdxType nVertices, IdxType startIdx
+    ) {
+        constexpr int threadsPerBlock = 32;
+        constexpr int blocks = 1;
+        constexpr IdxType maxIdxType = (IdxType)0 - (IdxType)1;
+
+        IdxType localBuffer;
+        kernel_findUnvisitedSuccessiveSimplified <<<
+            dim3(blocks), dim3(threadsPerBlock)
+        >>> (d_resultBuffer, d_visited, nVertices, startIdx);
+        cudaDeviceSynchronize();
+
+        CUDA_CHECK(cudaMemcpy(&localBuffer, d_resultBuffer, sizeof(IdxType), cudaMemcpyDeviceToHost))
+
+        struct Result {
+            bool wasFound;
+            IdxType idx;
+        };
+        return Result{localBuffer != maxIdxType, localBuffer};
+    }
+};
+
 static __global__ void kernel_findUnvisitedSuccessiveMultWarp(
     IdxType * outBuffer,
     IdxType * d_visited,
@@ -316,6 +369,9 @@ static __global__ void kernel_findUnvisitedSuccessiveMultWarp(
     if (tid == 0) *outBuffer = contribution;
 }
 
+
+
+
 struct FindNextUnvisited_SuccessiveMultWarpPolicy {
 
     static auto findNextUnvisited(
@@ -349,6 +405,8 @@ template <> struct FindNextUnvisitedPolicy<findNextUnivisitedSuccessivePolicy>
 : FindNextUnvisited_SuccessivePolicy {};
 template <> struct FindNextUnvisitedPolicy<findNextUnivisitedSuccessiveMultWarpPolicy>
 : FindNextUnvisited_SuccessiveMultWarpPolicy {};
+template <> struct FindNextUnvisitedPolicy<findNextUnivisitedSuccessiveSimplifiedPolicy>
+: FindNextUnvisited_SuccessiveSimplifiedPolicy {};
 
 template <int FindNextUnvisitedPolicyKey>
 void doFindAllComponents(
@@ -376,4 +434,5 @@ static void forceInstantiation() {
     doFindAllComponents<findNextUnivisitedNaivePolicy> (nullptr, nullptr, nullptr, nullptr, nullptr);
     doFindAllComponents<findNextUnivisitedSuccessivePolicy> (nullptr, nullptr, nullptr, nullptr, nullptr);
     doFindAllComponents<findNextUnivisitedSuccessiveMultWarpPolicy> (nullptr, nullptr, nullptr, nullptr, nullptr);
+    doFindAllComponents<findNextUnivisitedSuccessiveSimplifiedPolicy> (nullptr, nullptr, nullptr, nullptr, nullptr);
 }

@@ -49,6 +49,7 @@ void doFindAllComponents(
 constexpr int findNextUnivisitedNaivePolicy = 1;
 constexpr int findNextUnivisitedSuccessivePolicy = 2;
 constexpr int findNextUnivisitedSuccessiveMultWarpPolicy = 3;
+constexpr int findNextUnivisitedSuccessiveSimplifiedPolicy = 4;
 
 struct AllComponentsFinder {
   ComponentFinder cf;
