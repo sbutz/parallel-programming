@@ -56,6 +56,39 @@ static __global__ void kernel_bfs(
     }
 }
 
+texture<IdxType, 1, cudaReadModeElementType> startIndicesTexture;
+
+static __global__ void kernel_bfs_texture(
+    DNeighborGraph graph,
+    unsigned int * d_visited,
+    unsigned int visitedTag, // must be != 0
+    IdxType * cntFrontier,
+    IdxType * frontier,
+    IdxType * cntNewFrontier,
+    IdxType * newFrontier
+) {
+    unsigned int tid = blockDim.x * blockIdx.x + threadIdx.x;
+    IdxType stride = 1;
+
+    for (IdxType i = tid * stride; i < tid * stride + 1; ++i) {
+        if (i < *cntFrontier) {
+            IdxType vertex = frontier[i];
+            IdxType incidenceListStart = tex1D(startIndicesTexture, vertex);
+            IdxType incidenceListEnd = tex1D(startIndicesTexture, vertex + 1);
+
+            for (IdxType j = incidenceListStart; j < incidenceListEnd; ++j) {
+                IdxType destination = graph.d_incidenceAry[j];
+                unsigned int destinationVisited = d_visited[destination];
+                if(destinationVisited <= 1) {
+                    d_visited[destination] = visitedTag;
+                    if (destinationVisited == 0) appendToFrontier(cntNewFrontier, newFrontier, destination);
+                }
+            }
+
+        }
+    }
+}
+
 ComponentFinder::ComponentFinder(DNeighborGraph const * graph, std::size_t maxFrontierSize) : nVertices(graph->nVertices) {
     // TODO: Should we malloc everything at once?
     CUDA_CHECK(cudaMalloc(&this->d_visited, (std::size_t)graph->nVertices * sizeof(IdxType)))
@@ -73,41 +106,100 @@ ComponentFinder::~ComponentFinder() {
     (void)cudaFree(this->d_visited);
 }
 
+template <int GraphStoragePolicyKey> struct FindComponent;
+
+template <>
+struct FindComponent<graphStorageGlobalPolicy> {
+    static void findComponent(
+        ComponentFinder * cf,
+        DNeighborGraph const * graph,
+        IdxType startVertex, IdxType visitedTag,
+        void (*callback) (void *), void * callbackData
+    ) {
+        constexpr int threadsPerBlock = 128;
+        IdxType startValues [2] = { 1, startVertex };
+
+        CUDA_CHECK(cudaMemcpy(cf->frontiers[cf->currentFrontier].d_cntFrontier, &startValues, 2 * sizeof(IdxType), cudaMemcpyHostToDevice))
+        CUDA_CHECK(cudaMemset(&cf->d_visited[startVertex], visitedTag, sizeof(IdxType)))
+        for (;;) {
+            CUDA_CHECK(cudaMemset(cf->frontiers[!cf->currentFrontier].d_cntFrontier, 0, sizeof(IdxType)))
+            kernel_bfs <<<
+                dim3((graph->nVertices + threadsPerBlock - 1) / threadsPerBlock),
+                dim3(threadsPerBlock)
+            >>> (
+                *graph,
+                cf->d_visited,
+                visitedTag,
+                cf->frontiers[cf->currentFrontier].d_cntFrontier,
+                cf->frontiers[cf->currentFrontier].d_frontier,
+                cf->frontiers[!cf->currentFrontier].d_cntFrontier,
+                cf->frontiers[!cf->currentFrontier].d_frontier
+            );
+            cudaDeviceSynchronize();
+
+            if (callback) (*callback) (callbackData);
+
+            IdxType cntNewFrontier;
+            CUDA_CHECK(cudaMemcpy(
+                &cntNewFrontier, cf->frontiers[!cf->currentFrontier].d_cntFrontier, sizeof(IdxType),
+                cudaMemcpyDeviceToHost
+            ))
+            if (!cntNewFrontier) break;
+            cf->currentFrontier = !cf->currentFrontier;
+        }  
+    }
+};
+
+template <>
+struct FindComponent<graphStorageTexturePolicy> {
+    static void findComponent(
+        ComponentFinder * cf,
+        DNeighborGraph const * graph, 
+        IdxType startVertex, IdxType visitedTag,
+        void (*callback) (void *), void * callbackData
+    ) {
+        constexpr int threadsPerBlock = 128;
+        IdxType startValues [2] = { 1, startVertex };
+
+        CUDA_CHECK(cudaMemcpy(cf->frontiers[cf->currentFrontier].d_cntFrontier, &startValues, 2 * sizeof(IdxType), cudaMemcpyHostToDevice))
+        CUDA_CHECK(cudaMemset(&cf->d_visited[startVertex], visitedTag, sizeof(IdxType)))
+        for (;;) {
+            CUDA_CHECK(cudaMemset(cf->frontiers[!cf->currentFrontier].d_cntFrontier, 0, sizeof(IdxType)))
+            kernel_bfs_texture <<<
+                dim3((graph->nVertices + threadsPerBlock - 1) / threadsPerBlock),
+                dim3(threadsPerBlock)
+            >>> (
+                *graph,
+                cf->d_visited,
+                visitedTag,
+                cf->frontiers[cf->currentFrontier].d_cntFrontier,
+                cf->frontiers[cf->currentFrontier].d_frontier,
+                cf->frontiers[!cf->currentFrontier].d_cntFrontier,
+                cf->frontiers[!cf->currentFrontier].d_frontier
+            );
+            cudaDeviceSynchronize();
+
+            if (callback) (*callback) (callbackData);
+
+            IdxType cntNewFrontier;
+            CUDA_CHECK(cudaMemcpy(
+                &cntNewFrontier, cf->frontiers[!cf->currentFrontier].d_cntFrontier, sizeof(IdxType),
+                cudaMemcpyDeviceToHost
+            ))
+            if (!cntNewFrontier) break;
+            cf->currentFrontier = !cf->currentFrontier;
+        }  
+    }
+};
+
+template <int GraphStoragePolicyKey>
 void ComponentFinder::findComponent(
     DNeighborGraph const * graph, IdxType startVertex, IdxType visitedTag,
     void (*callback) (void *), void * callbackData
 ) {
-    constexpr int threadsPerBlock = 128;
-    IdxType startValues [2] = { 1, startVertex };
-
-    CUDA_CHECK(cudaMemcpy(this->frontiers[this->currentFrontier].d_cntFrontier, &startValues, 2 * sizeof(IdxType), cudaMemcpyHostToDevice))
-    CUDA_CHECK(cudaMemset(&this->d_visited[startVertex], visitedTag, sizeof(IdxType)))
-    for (;;) {
-        CUDA_CHECK(cudaMemset(this->frontiers[!this->currentFrontier].d_cntFrontier, 0, sizeof(IdxType)))
-        kernel_bfs <<<
-            dim3((graph->nVertices + threadsPerBlock - 1) / threadsPerBlock),
-            dim3(threadsPerBlock)
-        >>> (
-            *graph,
-            this->d_visited,
-            visitedTag,
-            this->frontiers[this->currentFrontier].d_cntFrontier,
-            this->frontiers[this->currentFrontier].d_frontier,
-            this->frontiers[!this->currentFrontier].d_cntFrontier,
-            this->frontiers[!this->currentFrontier].d_frontier
-        );
-        cudaDeviceSynchronize();
-
-        if (callback) (*callback) (callbackData);
-
-        IdxType cntNewFrontier;
-        CUDA_CHECK(cudaMemcpy(
-            &cntNewFrontier, this->frontiers[!this->currentFrontier].d_cntFrontier, sizeof(IdxType),
-            cudaMemcpyDeviceToHost
-        ))
-        if (!cntNewFrontier) break;
-        this->currentFrontier = !this->currentFrontier;
-    }  
+    FindComponent<GraphStoragePolicyKey>::findComponent(
+        this, graph, startVertex, visitedTag, callback, callbackData
+    );
 }
 
 static __global__ void kernel_markNonCore(
@@ -394,34 +486,89 @@ struct FindNextUnvisitedPolicy<findNextUnivisitedSuccessiveMultWarpPolicy> {
 };
 
 
+template <int FindNextUnvisitedPolicyKey, int GraphStoragePolicy> struct DoFindAllComponents;
 
 template <int FindNextUnvisitedPolicyKey>
+struct DoFindAllComponents<FindNextUnvisitedPolicyKey, graphStorageGlobalPolicy> {
+    static void doFindAllComponents(
+        FindComponentsProfile * profile,
+        AllComponentsFinder * acf, DNeighborGraph const * graph,
+        void (*callback) (void *), void * callbackData
+    ) {
+        profile->timeMarkNonCore = runAndMeasureCuda(markNonCore, acf, graph);
+        profile->timeFindComponents = runAndMeasureCuda([&]{
+            IdxType nIterations = 0;
+            IdxType startIdx = 1;
+            for (;;) {
+                auto nextUnvisited = FindNextUnvisitedPolicy<FindNextUnvisitedPolicyKey>::findNextUnvisited(
+                    acf->d_resultBuffer, acf->cf.d_visited, graph->nVertices, startIdx
+                );
+                if (!nextUnvisited.wasFound) break;
+                acf->cf.findComponent<graphStorageGlobalPolicy>(
+                    graph, nextUnvisited.idx, acf->nextFreeTag, callback, callbackData
+                );
+                startIdx = nextUnvisited.idx + 1;
+                ++acf->nextFreeTag;
+                ++nIterations;
+            }
+        });
+    }
+};
+
+template <int FindNextUnvisitedPolicyKey>
+struct DoFindAllComponents<FindNextUnvisitedPolicyKey, graphStorageTexturePolicy> {
+    static void doFindAllComponents(
+        FindComponentsProfile * profile,
+        AllComponentsFinder * acf, DNeighborGraph const * graph,
+        void (*callback) (void *), void * callbackData
+    ) {
+        cudaArray * texArray = nullptr;
+        cudaChannelFormatDesc channelDesc = cudaCreateChannelDesc<IdxType> ();
+        CUDA_CHECK(cudaMallocArray(&texArray, &channelDesc, graph->nVertices + 1))
+        CUDA_CHECK(cudaMemcpy2DToArray(
+            texArray, 0, 0, graph->d_startIndices,
+            graph->nVertices + 1, graph->nVertices + 1, 1,
+            cudaMemcpyDeviceToDevice
+        ))
+        CUDA_CHECK(cudaBindTextureToArray(startIndicesTexture, texArray))
+
+        profile->timeMarkNonCore = runAndMeasureCuda(markNonCore, acf, graph);
+        profile->timeFindComponents = runAndMeasureCuda([&]{
+            IdxType nIterations = 0;
+            IdxType startIdx = 1;
+            for (;;) {
+                auto nextUnvisited = FindNextUnvisitedPolicy<FindNextUnvisitedPolicyKey>::findNextUnvisited(
+                    acf->d_resultBuffer, acf->cf.d_visited, graph->nVertices, startIdx
+                );
+                if (!nextUnvisited.wasFound) break;
+                acf->cf.findComponent<graphStorageTexturePolicy>(
+                    graph, nextUnvisited.idx, acf->nextFreeTag, callback, callbackData
+                );
+                startIdx = nextUnvisited.idx + 1;
+                ++acf->nextFreeTag;
+                ++nIterations;
+            }
+        });
+    }
+};
+
+
+template <int FindNextUnvisitedPolicyKey, int GraphStoragePolicyKey>
 void doFindAllComponents(
     FindComponentsProfile * profile,
     AllComponentsFinder * acf, DNeighborGraph const * graph,
     void (*callback) (void *), void * callbackData
 ) {
-    profile->timeMarkNonCore = runAndMeasureCuda(markNonCore, acf, graph);
-    profile->timeFindComponents = runAndMeasureCuda([&]{
-        IdxType nIterations = 0;
-        IdxType startIdx = 1;
-        for (;;) {
-            auto nextUnvisited = FindNextUnvisitedPolicy<FindNextUnvisitedPolicyKey>::findNextUnvisited(
-                acf->d_resultBuffer, acf->cf.d_visited, graph->nVertices, startIdx
-            );
-            if (!nextUnvisited.wasFound) break;
-            acf->cf.findComponent(graph, nextUnvisited.idx, acf->nextFreeTag, callback, callbackData);
-            startIdx = nextUnvisited.idx + 1;
-            ++acf->nextFreeTag;
-            ++nIterations;
-        }
-    });
+    DoFindAllComponents<FindNextUnvisitedPolicyKey, GraphStoragePolicyKey>::doFindAllComponents(
+        profile, acf, graph, callback, callbackData
+    );
 }
 
 static void forceInstantiation() __attribute__ ((unused));
 static void forceInstantiation() {
-    doFindAllComponents<findNextUnivisitedNaivePolicy> (nullptr, nullptr, nullptr, nullptr, nullptr);
-    doFindAllComponents<findNextUnivisitedSuccessivePolicy> (nullptr, nullptr, nullptr, nullptr, nullptr);
-    doFindAllComponents<findNextUnivisitedSuccessiveMultWarpPolicy> (nullptr, nullptr, nullptr, nullptr, nullptr);
-    doFindAllComponents<findNextUnivisitedSuccessiveSimplifiedPolicy> (nullptr, nullptr, nullptr, nullptr, nullptr);
+    doFindAllComponents<findNextUnivisitedNaivePolicy, graphStorageGlobalPolicy> (nullptr, nullptr, nullptr, nullptr, nullptr);
+    doFindAllComponents<findNextUnivisitedSuccessivePolicy, graphStorageGlobalPolicy> (nullptr, nullptr, nullptr, nullptr, nullptr);
+    doFindAllComponents<findNextUnivisitedSuccessiveMultWarpPolicy, graphStorageGlobalPolicy> (nullptr, nullptr, nullptr, nullptr, nullptr);
+    doFindAllComponents<findNextUnivisitedSuccessiveSimplifiedPolicy, graphStorageGlobalPolicy> (nullptr, nullptr, nullptr, nullptr, nullptr);
+    doFindAllComponents<findNextUnivisitedSuccessiveSimplifiedPolicy, graphStorageTexturePolicy> (nullptr, nullptr, nullptr, nullptr, nullptr);
 }

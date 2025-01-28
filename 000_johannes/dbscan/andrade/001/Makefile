@@ -10,7 +10,7 @@ GENCODE_SM72    := -gencode arch=compute_72,code=sm_72
 GENCODE_SM80    := -gencode arch=compute_80,code=sm_80
 GENCODE_FLAGS	:= $(GENCODE_SM72)
 
-NVCC_FLAGS += -dc -Xcompiler -lineinfo -DUSE_NVTX -lnvToolsExt $(GENCODE_FLAGS) -std=c++14
+NVCC_FLAGS += -dc -Xcompiler -lineinfo -DUSE_NVTX -lnvToolsExt $(GENCODE_FLAGS) -std=c++14 -O3
 NVCC_LDFLAGS = -ccbin=g++  -lcuda -lcudart -ljpeg
 
 SRCDIR=./src

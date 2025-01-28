@@ -31,6 +31,7 @@ struct ComponentFinder {
   ComponentFinder(DNeighborGraph const * graph, size_t maxFrontierSize);
   ComponentFinder(ComponentFinder const &) = delete;
   ~ComponentFinder();
+  template <int GraphStoragePolicyKey>
   void findComponent(
       DNeighborGraph const * graph, IdxType startVertex, IdxType visitedTag,
       void (*callback) (void *) = nullptr, void * callbackData = nullptr
@@ -39,7 +40,7 @@ struct ComponentFinder {
 
 struct AllComponentsFinder;
 
-template <int FindNextUnvisitedPolicyKey>
+template <int FindNextUnvisitedPolicyKey, int GraphStoragePolicyKey>
 void doFindAllComponents(
   FindComponentsProfile * profile,
   AllComponentsFinder *, DNeighborGraph const *,
@@ -51,6 +52,9 @@ constexpr int findNextUnivisitedSuccessivePolicy = 2;
 constexpr int findNextUnivisitedSuccessiveMultWarpPolicy = 3;
 constexpr int findNextUnivisitedSuccessiveSimplifiedPolicy = 4;
 
+constexpr int graphStorageGlobalPolicy = 1;
+constexpr int graphStorageTexturePolicy = 2;
+
 struct AllComponentsFinder {
   ComponentFinder cf;
   IdxType nextFreeTag;
@@ -61,9 +65,9 @@ struct AllComponentsFinder {
   AllComponentsFinder(AllComponentsFinder const &) = delete;
   ~AllComponentsFinder();
 
-  template <int FindNextUnvisitedPolicyKey, typename Callback>
+  template <int FindNextUnvisitedPolicyKey, int GraphStoragePolicyKey, typename Callback>
   void findAllComponents(FindComponentsProfile * profile, DNeighborGraph const * graph, Callback && callback = []{}) {
-    doFindAllComponents<FindNextUnvisitedPolicyKey>(profile, this, graph,
+    doFindAllComponents<FindNextUnvisitedPolicyKey, GraphStoragePolicyKey>(profile, this, graph,
       [](void * callback) { (*(Callback *)callback) (); },
       &callback
     );
