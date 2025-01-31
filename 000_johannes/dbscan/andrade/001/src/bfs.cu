@@ -56,6 +56,84 @@ static __global__ void kernel_bfs(
     }
 }
 
+constexpr IdxType sharedFrontierSize = 1u << 13; // 8 * 1024 values -> 4 * 8 * 1024 Bytes = 32 kiB
+
+static __device__ void appendToFrontierShared(
+    IdxType * cntSharedFrontier, IdxType * sharedFrontier,
+    IdxType * cntFrontier, IdxType * frontier, IdxType vertex
+) {
+    if (*cntSharedFrontier < sharedFrontierSize) {
+        IdxType old = atomicAdd(cntSharedFrontier, 1);
+        sharedFrontier[old] = vertex;
+    } else {
+        IdxType old = atomicAdd(cntFrontier, 1);
+        frontier[old] = vertex;
+    }
+}
+
+static __device__ void copySharedToGlobalFrontier(
+    IdxType * startPos,
+    IdxType * cntSharedFrontier, IdxType * sharedFrontier,
+    IdxType * cntGlobalFrontier, IdxType * globalFrontier
+) {
+    if (threadIdx.x == 0) *startPos = atomicAdd(cntGlobalFrontier, *cntSharedFrontier);
+    __syncthreads();
+    IdxType start = *startPos;
+    IdxType stride = blockDim.x;
+    for (IdxType i = threadIdx.x; i < sharedFrontierSize; i += stride) {
+        globalFrontier[start + i] = sharedFrontier[i];
+    }
+}
+
+static __global__ void kernel_bfs_shared_frontier(
+    DNeighborGraph graph,
+    unsigned int * d_visited,
+    unsigned int visitedTag, // must be != 0
+    IdxType * cntFrontier,
+    IdxType * frontier,
+    IdxType * cntNewFrontier,
+    IdxType * newFrontier
+) {
+    __shared__ IdxType cntSharedFrontier;
+    __shared__ IdxType startPos;
+    __shared__ IdxType sharedFrontier[sharedFrontierSize];
+
+    unsigned int tid = blockDim.x * blockIdx.x + threadIdx.x;
+    IdxType stride = 1;
+
+    if (threadIdx.x == 0) cntSharedFrontier = 0;
+    __syncthreads();
+
+    for (IdxType i = tid * stride; i < tid * stride + 1; ++i) {
+        if (i < *cntFrontier) {
+            IdxType vertex = frontier[i];
+            IdxType incidenceListStart = graph.d_startIndices[vertex];
+            IdxType incidenceListEnd = graph.d_startIndices[vertex+1];
+
+            for (IdxType j = incidenceListStart; j < incidenceListEnd; ++j) {
+                IdxType destination = graph.d_incidenceAry[j];
+                unsigned int destinationVisited = d_visited[destination];
+                if(destinationVisited <= 1) {
+                    d_visited[destination] = visitedTag;
+                    if (destinationVisited == 0) appendToFrontierShared(
+                        &cntSharedFrontier, sharedFrontier,
+                        cntNewFrontier, newFrontier, destination
+                    );
+                }
+            }
+        }
+    }
+
+    __syncthreads();
+
+    copySharedToGlobalFrontier(
+        &startPos,
+        &cntSharedFrontier, sharedFrontier,
+        cntNewFrontier, newFrontier
+    );
+}
+
+
 ComponentFinder::ComponentFinder(DNeighborGraph const * graph, std::size_t maxFrontierSize) : nVertices(graph->nVertices) {
     // TODO: Should we malloc everything at once?
     CUDA_CHECK(cudaMalloc(&this->d_visited, (std::size_t)graph->nVertices * sizeof(IdxType)))
@@ -73,41 +151,99 @@ ComponentFinder::~ComponentFinder() {
     (void)cudaFree(this->d_visited);
 }
 
+template <int FrontierPolicyKey> struct FindComponent;
+
+template <>
+struct FindComponent<frontierBasicPolicy> {
+    static void findComponent(
+        ComponentFinder * cf,
+        DNeighborGraph const * graph, IdxType startVertex, IdxType visitedTag,
+        void (*callback) (void *), void * callbackData
+    ) {
+        constexpr int threadsPerBlock = 128;
+        IdxType startValues [2] = { 1, startVertex };
+
+        CUDA_CHECK(cudaMemcpy(cf->frontiers[cf->currentFrontier].d_cntFrontier, &startValues, 2 * sizeof(IdxType), cudaMemcpyHostToDevice))
+        CUDA_CHECK(cudaMemset(&cf->d_visited[startVertex], visitedTag, sizeof(IdxType)))
+        for (;;) {
+            CUDA_CHECK(cudaMemset(cf->frontiers[!cf->currentFrontier].d_cntFrontier, 0, sizeof(IdxType)))
+            kernel_bfs <<<
+                dim3((graph->nVertices + threadsPerBlock - 1) / threadsPerBlock),
+                dim3(threadsPerBlock)
+            >>> (
+                *graph,
+                cf->d_visited,
+                visitedTag,
+                cf->frontiers[cf->currentFrontier].d_cntFrontier,
+                cf->frontiers[cf->currentFrontier].d_frontier,
+                cf->frontiers[!cf->currentFrontier].d_cntFrontier,
+                cf->frontiers[!cf->currentFrontier].d_frontier
+            );
+            cudaDeviceSynchronize();
+
+            if (callback) (*callback) (callbackData);
+
+            IdxType cntNewFrontier;
+            CUDA_CHECK(cudaMemcpy(
+                &cntNewFrontier, cf->frontiers[!cf->currentFrontier].d_cntFrontier, sizeof(IdxType),
+                cudaMemcpyDeviceToHost
+            ))
+            if (!cntNewFrontier) break;
+            cf->currentFrontier = !cf->currentFrontier;
+        }
+    }
+};
+
+template <>
+struct FindComponent<frontierSharedPolicy> {
+    static void findComponent(
+        ComponentFinder * cf,
+        DNeighborGraph const * graph, IdxType startVertex, IdxType visitedTag,
+        void (*callback) (void *), void * callbackData
+    ) {
+        constexpr int threadsPerBlock = 128;
+        IdxType startValues [2] = { 1, startVertex };
+
+        CUDA_CHECK(cudaMemcpy(cf->frontiers[cf->currentFrontier].d_cntFrontier, &startValues, 2 * sizeof(IdxType), cudaMemcpyHostToDevice))
+        CUDA_CHECK(cudaMemset(&cf->d_visited[startVertex], visitedTag, sizeof(IdxType)))
+        for (;;) {
+            CUDA_CHECK(cudaMemset(cf->frontiers[!cf->currentFrontier].d_cntFrontier, 0, sizeof(IdxType)))
+            kernel_bfs_shared_frontier <<<
+                dim3((graph->nVertices + threadsPerBlock - 1) / threadsPerBlock),
+                dim3(threadsPerBlock)
+            >>> (
+                *graph,
+                cf->d_visited,
+                visitedTag,
+                cf->frontiers[cf->currentFrontier].d_cntFrontier,
+                cf->frontiers[cf->currentFrontier].d_frontier,
+                cf->frontiers[!cf->currentFrontier].d_cntFrontier,
+                cf->frontiers[!cf->currentFrontier].d_frontier
+            );
+            cudaDeviceSynchronize();
+
+            if (callback) (*callback) (callbackData);
+
+            IdxType cntNewFrontier;
+            CUDA_CHECK(cudaMemcpy(
+                &cntNewFrontier, cf->frontiers[!cf->currentFrontier].d_cntFrontier, sizeof(IdxType),
+                cudaMemcpyDeviceToHost
+            ))
+            if (!cntNewFrontier) break;
+            cf->currentFrontier = !cf->currentFrontier;
+        }
+    }
+};
+
+
+template <int FrontierPolicyKey>
 void ComponentFinder::findComponent(
     DNeighborGraph const * graph, IdxType startVertex, IdxType visitedTag,
     void (*callback) (void *), void * callbackData
 ) {
-    constexpr int threadsPerBlock = 128;
-    IdxType startValues [2] = { 1, startVertex };
-
-    CUDA_CHECK(cudaMemcpy(this->frontiers[this->currentFrontier].d_cntFrontier, &startValues, 2 * sizeof(IdxType), cudaMemcpyHostToDevice))
-    CUDA_CHECK(cudaMemset(&this->d_visited[startVertex], visitedTag, sizeof(IdxType)))
-    for (;;) {
-        CUDA_CHECK(cudaMemset(this->frontiers[!this->currentFrontier].d_cntFrontier, 0, sizeof(IdxType)))
-        kernel_bfs <<<
-            dim3((graph->nVertices + threadsPerBlock - 1) / threadsPerBlock),
-            dim3(threadsPerBlock)
-        >>> (
-            *graph,
-            this->d_visited,
-            visitedTag,
-            this->frontiers[this->currentFrontier].d_cntFrontier,
-            this->frontiers[this->currentFrontier].d_frontier,
-            this->frontiers[!this->currentFrontier].d_cntFrontier,
-            this->frontiers[!this->currentFrontier].d_frontier
-        );
-        cudaDeviceSynchronize();
-
-        if (callback) (*callback) (callbackData);
-
-        IdxType cntNewFrontier;
-        CUDA_CHECK(cudaMemcpy(
-            &cntNewFrontier, this->frontiers[!this->currentFrontier].d_cntFrontier, sizeof(IdxType),
-            cudaMemcpyDeviceToHost
-        ))
-        if (!cntNewFrontier) break;
-        this->currentFrontier = !this->currentFrontier;
-    }  
+    FindComponent<FrontierPolicyKey>::findComponent(
+        this, graph, startVertex, visitedTag, callback, callbackData
+    );
 }
 
 static __global__ void kernel_markNonCore(
@@ -395,7 +531,7 @@ struct FindNextUnvisitedPolicy<findNextUnivisitedSuccessiveMultWarpPolicy> {
 
 
 
-template <int FindNextUnvisitedPolicyKey>
+template <int FindNextUnvisitedPolicyKey, int FrontierPolicyKey>
 void doFindAllComponents(
     FindComponentsProfile * profile,
     AllComponentsFinder * acf, DNeighborGraph const * graph,
@@ -410,7 +546,7 @@ void doFindAllComponents(
                 acf->d_resultBuffer, acf->cf.d_visited, graph->nVertices, startIdx
             );
             if (!nextUnvisited.wasFound) break;
-            acf->cf.findComponent(graph, nextUnvisited.idx, acf->nextFreeTag, callback, callbackData);
+            acf->cf.findComponent<FrontierPolicyKey>(graph, nextUnvisited.idx, acf->nextFreeTag, callback, callbackData);
             startIdx = nextUnvisited.idx + 1;
             ++acf->nextFreeTag;
             ++nIterations;
@@ -420,8 +556,9 @@ void doFindAllComponents(
 
 static void forceInstantiation() __attribute__ ((unused));
 static void forceInstantiation() {
-    doFindAllComponents<findNextUnivisitedNaivePolicy> (nullptr, nullptr, nullptr, nullptr, nullptr);
-    doFindAllComponents<findNextUnivisitedSuccessivePolicy> (nullptr, nullptr, nullptr, nullptr, nullptr);
-    doFindAllComponents<findNextUnivisitedSuccessiveMultWarpPolicy> (nullptr, nullptr, nullptr, nullptr, nullptr);
-    doFindAllComponents<findNextUnivisitedSuccessiveSimplifiedPolicy> (nullptr, nullptr, nullptr, nullptr, nullptr);
+    doFindAllComponents<findNextUnivisitedNaivePolicy, frontierBasicPolicy> (nullptr, nullptr, nullptr, nullptr, nullptr);
+    doFindAllComponents<findNextUnivisitedSuccessivePolicy, frontierBasicPolicy> (nullptr, nullptr, nullptr, nullptr, nullptr);
+    doFindAllComponents<findNextUnivisitedSuccessiveMultWarpPolicy, frontierBasicPolicy> (nullptr, nullptr, nullptr, nullptr, nullptr);
+    doFindAllComponents<findNextUnivisitedSuccessiveSimplifiedPolicy, frontierBasicPolicy> (nullptr, nullptr, nullptr, nullptr, nullptr);
+    doFindAllComponents<findNextUnivisitedSuccessiveSimplifiedPolicy, frontierSharedPolicy> (nullptr, nullptr, nullptr, nullptr, nullptr);
 }
