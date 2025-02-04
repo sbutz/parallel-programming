@@ -222,6 +222,7 @@ int main (int argc, char * argv []) {
 
   auto res = runDbscan(&profile, a.data(), b.data(), nDataPoints, config.n, config.r);
 
+/*
   auto verbalizeState = [](unsigned int state) {
     std::string s = {};
     if (state & stateUnderInspection) s += "[under inspection]";
@@ -233,13 +234,14 @@ int main (int argc, char * argv []) {
   for (int i = 0; i < 20; ++i) {
     std::cerr << verbalizeState(res.states[i]) << " " << res.clusters[i] << "\n";
   }
-
+*/
 
   // print JSON output
   std::cout << "{\n";
     std::cout << "\"output\": {\n";
-//      std::cout << "\"x\": "; jsonPrintFloatAry(a.data(), a.size()); std::cout << ",\n";
-//      std::cout << "\"y\": "; jsonPrintFloatAry(b.data(), b.size()); std::cout << ",\n";
+      std::cout << "\"x\": "; jsonPrintFloatAry(a.data(), a.size()); std::cout << ",\n";
+      std::cout << "\"y\": "; jsonPrintFloatAry(b.data(), b.size()); std::cout << ",\n";
+      std::cout << "\"cluster_id\": "; jsonPrintIdxTypeAry(res.clusters.data(), res.clusters.size()); std::cout << "\n";
     std::cout << "},\n";
     std::cout << "\"profile\": {\n";
       std::cout << "\"timeTotal\": " << profile.timeTotal << "\n";      

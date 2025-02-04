@@ -2,6 +2,8 @@
 #include "types.h"
 #include "cuda_helpers.h"
 
+#include <iostream>
+
 DPoints copyPointsToDevice(float const * x, float const * y, IdxType n) {
   float * d_x, * d_y;
   CUDA_CHECK(cudaMalloc(&d_x, n * sizeof(float)))
@@ -129,6 +131,7 @@ static __global__ void kernel_clusterExpansion(
 
     IdxType seedPointIdx = seedLists[maxSeedLength * threadGroupIdx + seedLength];
     unsigned int currentClusterId = seedClusterIds[maxSeedLength * threadGroupIdx + seedLength];
+    if (currentClusterId == 0) currentClusterId = seedPointIdx + 1;
 
     pointState[seedPointIdx] = stateUnderInspection;
     float x = xs[seedPointIdx], y = ys[seedPointIdx];
@@ -183,6 +186,7 @@ void allocateDeviceMemory(
   CUDA_CHECK(cudaMalloc(d_seedLists, nBlocks * maxSeedLength * sizeof(IdxType)))
   CUDA_CHECK(cudaMalloc(d_seedClusterIds, nBlocks * maxSeedLength * sizeof(IdxType)))
   CUDA_CHECK(cudaMalloc(d_seedLengths, nBlocks * sizeof(IdxType)))
+  CUDA_CHECK(cudaMemset(*d_seedLengths, 0, nBlocks * sizeof(IdxType)))
   CUDA_CHECK(cudaMalloc(d_collisionMatrix, nBlocks * (nBlocks + 1) / 2 * sizeof(bool)))
   CUDA_CHECK(cudaMemset(*d_collisionMatrix, 0, nBlocks * (nBlocks + 1) / 2 * sizeof(bool)))
 }
@@ -199,6 +203,35 @@ static __global__ void kernel_populateSeedLists(
   }
 }
 
+static __global__ void kernel_refillSeed(
+    IdxType * d_foundAt,
+    IdxType * d_seedLists, IdxType * d_seedClusterIds, IdxType * d_seedLengths, int k,
+    unsigned int * d_pointState, IdxType * d_clusters, IdxType n,
+    IdxType startPos
+) {
+    constexpr unsigned int wrp = 32;
+    IdxType result = (IdxType)-1;
+    for (IdxType strideIdx = startPos / wrp; strideIdx <= ((n - 1) / wrp); ++strideIdx) {
+        IdxType idx = strideIdx * wrp + threadIdx.x;
+        int unvisitedMask = __ballot_sync(0xffffffff, idx >= startPos && idx < n && !d_pointState[idx]);
+        if (unvisitedMask != 0) {
+            result = strideIdx * wrp + __ffs(unvisitedMask) - 1;
+            break;
+        }
+    }
+    if (threadIdx.x == 0) {
+      if (result == (IdxType)-1) {
+        *d_foundAt = result;
+      } else {
+        *d_foundAt = result;
+        d_pointState[result] = stateReserved;
+        d_seedLists[k * maxSeedLength] = result;
+        d_seedClusterIds[k * maxSeedLength] = d_clusters[result];
+        d_seedLengths[k] = 1;
+      }
+    }
+}
+
 void findClusters(
   unsigned int * d_pointStates, IdxType * d_clusters, bool * d_collisionMatrix,
   float * xs, float * ys, IdxType n,
@@ -208,9 +241,35 @@ void findClusters(
   constexpr int nBlocks = 6;
   constexpr int nThreadsPerBlock = 256;
 
-  kernel_populateSeedLists <<<dim3(1), dim3(nThreadsPerBlock)>>> (d_seedLists, d_seedClusterIds, d_seedLengths, nBlocks);
-  kernel_clusterExpansion <<<dim3(nBlocks), dim3(nThreadsPerBlock), ( (coreThreshold * sizeof(IdxType) + 127) / 128 * 128 + sizeof(IdxType) ) >>> (
-    d_clusters, d_pointStates, d_collisionMatrix, xs, ys, n, d_seedLists, d_seedClusterIds, d_seedLengths, coreThreshold, rsq
-  );
+  IdxType * d_foundAt;
+  CUDA_CHECK(cudaMalloc(&d_foundAt, sizeof(IdxType)))
+
+  IdxType seedLengths [nBlocks];
+  IdxType startPos = 0;
+  for (;;) {
+    CUDA_CHECK(cudaMemcpy(seedLengths, d_seedLengths, nBlocks * sizeof(IdxType), cudaMemcpyDeviceToHost))
+    bool stillWork = false;
+
+    for (int k = 0; k < nBlocks; ++k) {
+      if (seedLengths[k]) {
+        stillWork = true;
+      } else if (startPos != (IdxType)-1) {
+        IdxType foundAt = (IdxType)-1;
+        kernel_refillSeed <<<dim3(1), dim3(32)>>> (d_foundAt, d_seedLists, d_seedClusterIds, d_seedLengths, k, d_pointStates, d_clusters, n, startPos);
+        CUDA_CHECK(cudaGetLastError())
+        CUDA_CHECK(cudaMemcpy(&foundAt, d_foundAt, sizeof(IdxType), cudaMemcpyDeviceToHost))
+        std::cerr << "Refilled " << k << " " << foundAt << "\n";
+        startPos = foundAt + (foundAt != (IdxType)-1);
+        stillWork = stillWork || foundAt != (IdxType)-1;
+      }
+    }
+
+    if (!stillWork) break;
+
+    kernel_clusterExpansion <<<dim3(nBlocks), dim3(nThreadsPerBlock), ( (coreThreshold * sizeof(IdxType) + 127) / 128 * 128 + sizeof(IdxType) ) >>> (
+      d_clusters, d_pointStates, d_collisionMatrix, xs, ys, n, d_seedLists, d_seedClusterIds, d_seedLengths, coreThreshold, rsq
+    );
+    CUDA_CHECK(cudaGetLastError())
+  }
 }
 
