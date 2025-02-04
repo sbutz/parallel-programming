@@ -13,17 +13,24 @@ DPoints copyPointsToDevice(float const * x, float const * y, IdxType n);
 
 
 void allocateDeviceMemory(
-  IdxType ** d_pointStates,
-  IdxType ** d_seedLists, IdxType ** d_seedLengths,
+  unsigned int ** d_pointStates, IdxType ** d_clusters,
+  IdxType ** d_seedLists, IdxType ** d_seedClusterIds, IdxType ** d_seedLengths,
   bool ** d_collisionMatrix,
   int nBlocks,
   IdxType n
 );
 
+
+constexpr unsigned int stateReserved        = 0x80000000;
+constexpr unsigned int stateUnderInspection = 0x40000000; 
+constexpr unsigned int stateCore            = 0x20000000;
+constexpr unsigned int stateNoiseOrBorder   = 0x10000000;
+constexpr unsigned int stateFree            = 0x00000000;
+
 void findClusters(
-  IdxType * d_pointStates, bool * d_collisionMatrix,
+  unsigned int * d_pointStates, IdxType * d_clusters, bool * d_collisionMatrix,
   float * xs, float * ys, IdxType n,
-  IdxType * d_seedLists, IdxType * d_seedLengths,
+  IdxType * d_seedLists, IdxType * d_seedClusterIds, IdxType * d_seedLengths,
   IdxType coreThreshold, float rsq
 );
 

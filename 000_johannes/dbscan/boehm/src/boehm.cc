@@ -165,16 +165,18 @@ static auto runDbscan (
 
   auto points = copyPointsToDevice(h_x, h_y, nDataPoints);
 
-  IdxType * d_pointStates;
+  unsigned int * d_pointStates;
+  IdxType * d_clusters;
   IdxType * d_seedLists;
+  IdxType * d_seedClusterIds;
   IdxType * d_seedLengths;
   bool * d_collisionMatrix;
   constexpr int nBlocks = 6;
 
-  allocateDeviceMemory(&d_pointStates, &d_seedLists, &d_seedLengths, &d_collisionMatrix, nBlocks, nDataPoints);
+  allocateDeviceMemory(&d_pointStates, &d_clusters, &d_seedLists, &d_seedLengths, &d_seedClusterIds, &d_collisionMatrix, nBlocks, nDataPoints);
 
   findClusters(
-    d_pointStates, d_collisionMatrix, points.d_x, points.d_y, points.n, d_seedLists, d_seedLengths, coreThreshold, r * r
+    d_pointStates, d_clusters, d_collisionMatrix, points.d_x, points.d_y, points.n, d_seedLists, d_seedClusterIds, d_seedLengths, coreThreshold, r * r
   );
 /*  auto g1 = buildDNeighborGraphOnDevice(
     profile, points.d_x, points.d_y, points.n, coreThreshold, r
@@ -184,8 +186,11 @@ static auto runDbscan (
   auto tags = acf.getComponentTagsVector();
 */
 
-  std::vector<IdxType> tags(points.n);
-  CUDA_CHECK(cudaMemcpy(tags.data(), d_pointStates, points.n * sizeof(IdxType), cudaMemcpyDeviceToHost))
+  std::vector<unsigned int> states(points.n);
+  CUDA_CHECK(cudaMemcpy(states.data(), d_pointStates, points.n * sizeof(unsigned int), cudaMemcpyDeviceToHost))
+
+  std::vector<IdxType> clusters(points.n);
+  CUDA_CHECK(cudaMemcpy(clusters.data(), d_clusters, points.n * sizeof(IdxType), cudaMemcpyDeviceToHost))
 
 	CUDA_CHECK(cudaEventRecord(stop));
   CUDA_CHECK(cudaEventSynchronize(stop));
@@ -193,9 +198,10 @@ static auto runDbscan (
 
   struct Result {
 //    DNeighborGraph g1;
-    std::vector<IdxType> tags;
+    std::vector<unsigned int> states;
+    std::vector<IdxType> clusters;
   };
-  return Result { std::move(tags) };
+  return Result { std::move(states), std::move(clusters) };
 }
 
 int main (int argc, char * argv []) {
@@ -216,8 +222,16 @@ int main (int argc, char * argv []) {
 
   auto res = runDbscan(&profile, a.data(), b.data(), nDataPoints, config.n, config.r);
 
+  auto verbalizeState = [](unsigned int state) {
+    std::string s = {};
+    if (state & stateUnderInspection) s += "[under inspection]";
+    if (state & stateNoiseOrBorder) s += "[noise or border]";
+    if (state & stateCore) s += "[core]";
+    if (state & stateReserved) s += "[reserved]";
+    return s;
+  };
   for (int i = 0; i < 20; ++i) {
-    std::cerr << res.tags[i] << "\n";
+    std::cerr << verbalizeState(res.states[i]) << " " << res.clusters[i] << "\n";
   }
 
 
