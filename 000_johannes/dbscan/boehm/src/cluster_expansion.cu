@@ -90,8 +90,8 @@ static __device__ void processObject(
     if (h == coreThreshold) {
       cluster[myselfIdx] = currentClusterId;
       pointState[myselfIdx] = stateCore;
-      markAsCandidate(currentClusterId, pointIdx, collisionMatrix, cluster, pointState, seedList, seedClusterIds, seedLength);
-    } else if (h > coreThreshold) {
+    }
+    if (h >= coreThreshold) {
       markAsCandidate(currentClusterId, pointIdx, collisionMatrix, cluster, pointState, seedList, seedClusterIds, seedLength);
     } else {
       s_neighborBuffer[h] = pointIdx;
@@ -121,6 +121,7 @@ static __global__ void kernel_clusterExpansion(
   if (threadIdx.x == 0) *neighborCount = 0;
 
   IdxType seedLength = seedLengths[threadGroupIdx];
+  if (seedLength > maxSeedLength) seedLength = maxSeedLength;
 
   __syncthreads();
 
@@ -258,7 +259,7 @@ void findClusters(
         kernel_refillSeed <<<dim3(1), dim3(32)>>> (d_foundAt, d_seedLists, d_seedClusterIds, d_seedLengths, k, d_pointStates, d_clusters, n, startPos);
         CUDA_CHECK(cudaGetLastError())
         CUDA_CHECK(cudaMemcpy(&foundAt, d_foundAt, sizeof(IdxType), cudaMemcpyDeviceToHost))
-        std::cerr << "Refilled " << k << " " << foundAt << "\n";
+        //std::cerr << "Refilled " << k << " " << foundAt << "\n";
         startPos = foundAt + (foundAt != (IdxType)-1);
         stillWork = stillWork || foundAt != (IdxType)-1;
       }
