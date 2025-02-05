@@ -150,6 +150,32 @@ void jsonPrintIdxTypeAry(IdxType * ary, size_t n) {
 	printf(" ]");
 }
 
+
+void jsonPrintStateAry(IdxType * ary, size_t n) {
+  auto verbalizeState = [](unsigned int state) {
+    std::string s = {};
+    if (state & stateUnderInspection) s += "[under inspection]";
+    if (state & stateNoiseOrBorder) s += "[noise or border]";
+    if (state & stateCore) s += "[core]";
+    if (state & stateReserved) s += "[reserved]";
+    if (state & stateReserved2) s += "[reserved2]";
+    return s;
+  };
+	printf("[ ");
+	if (n > 0) {
+		size_t i = 0;
+		for (;;) {
+			std::cout << "\"" << verbalizeState(ary[i]) << "\"";
+			++i;
+			if (i == n) break;
+			printf(", ");
+		}
+	}
+	printf(" ]");
+
+
+}
+
 struct DbscanProfile {
   float timeTotal;
 };
@@ -241,6 +267,7 @@ int main (int argc, char * argv []) {
     std::cout << "\"output\": {\n";
       std::cout << "\"x\": "; jsonPrintFloatAry(a.data(), a.size()); std::cout << ",\n";
       std::cout << "\"y\": "; jsonPrintFloatAry(b.data(), b.size()); std::cout << ",\n";
+      std::cout << "\"state\": "; jsonPrintStateAry(res.states.data(), res.states.size()); std::cout << ",\n";
       std::cout << "\"cluster_id\": "; jsonPrintIdxTypeAry(res.clusters.data(), res.clusters.size()); std::cout << "\n";
     std::cout << "},\n";
     std::cout << "\"profile\": {\n";
