@@ -196,13 +196,15 @@ static auto runDbscan (
   IdxType * d_seedLists;
   IdxType * d_seedClusterIds;
   IdxType * d_seedLengths;
-  bool * d_collisionMatrix;
+  unsigned int * d_syncCounter;
+  unsigned int * d_collisionMatrix;
+  IdxType * d_processedIdxs;
   constexpr int nBlocks = 6;
 
-  allocateDeviceMemory(&d_pointStates, &d_clusters, &d_seedLists, &d_seedLengths, &d_seedClusterIds, &d_collisionMatrix, nBlocks, nDataPoints);
+  allocateDeviceMemory(&d_pointStates, &d_clusters, &d_seedLists, &d_seedLengths, &d_seedClusterIds, &d_syncCounter, &d_collisionMatrix, &d_processedIdxs, nBlocks, nDataPoints);
 
   findClusters(
-    d_pointStates, d_clusters, d_collisionMatrix, points.d_x, points.d_y, points.n, d_seedLists, d_seedClusterIds, d_seedLengths, coreThreshold, r * r
+    d_pointStates, d_clusters, points.d_x, points.d_y, points.n, d_seedLists, d_seedClusterIds, d_seedLengths, d_syncCounter, d_collisionMatrix, d_processedIdxs, coreThreshold, r * r
   );
 /*  auto g1 = buildDNeighborGraphOnDevice(
     profile, points.d_x, points.d_y, points.n, coreThreshold, r
