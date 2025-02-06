@@ -17,7 +17,19 @@ constexpr IdxType maxSeedLength = 1024; // TODO: Could be larger!?
 constexpr IdxType nChains = 512; // TODO: ??
 
 
-
+struct ThreadData {
+  IdxType currentClusterId;
+  IdxType pointBeingProcessedIdx;
+  bool * collisionMatrix;
+  IdxType * clusters;
+  unsigned int * pointStates;
+  IdxType * seedList;
+  IdxType * seedClusterIds;
+  IdxType * seedLength;
+  IdxType * seedReserved;
+  IdxType * neighborBuffer;
+  IdxType * neighborCount;
+};
 
 // collisionMatrix:
 //   in theory: n x n, but only entries (i,j) with j >= i used
@@ -35,25 +47,22 @@ constexpr IdxType nChains = 512; // TODO: ??
 //         (i, i) -> i * n - i * (i - 1) / 2
 //         (i, j) -> i * n - i * (i + 1) / 2 + j
 static __device__ void markAsCandidate(
-  IdxType currentClusterId,
-  IdxType pointIdx,
-  bool * collisionMatrix,
-  IdxType * cluster, unsigned int * pointState,
-  IdxType * seedList, IdxType * seedClusterIds, IdxType * seedLength, IdxType * seedReserved
+  ThreadData const & td,
+  IdxType pointIdx
 ) {
-  unsigned int state = pointState[pointIdx];
+  unsigned int state = td.pointStates[pointIdx];
   if (state == stateFree) {
-    IdxType oldReserved = atomicAdd(seedReserved, 1);
+    IdxType oldReserved = atomicAdd(td.seedReserved, 1);
     if (oldReserved < maxSeedLength) {
-      state = atomicCAS(&pointState[pointIdx], stateFree, stateReserved);
+      state = atomicCAS(&td.pointStates[pointIdx], stateFree, stateReserved);
       if (state == stateFree) {
-        int h = atomicAdd(seedLength, 1);
-        seedList[h] = pointIdx; seedClusterIds[h] = currentClusterId;
+        int h = atomicAdd(td.seedLength, 1);
+        td.seedList[h] = pointIdx; td.seedClusterIds[h] = td.currentClusterId;
       } else {
-        atomicSub(seedReserved, 1);
+        atomicSub(td.seedReserved, 1);
       }
     } else {
-      atomicSub(seedReserved, 1);
+      atomicSub(td.seedReserved, 1);
     }
   }
   switch (state) {
@@ -61,10 +70,10 @@ static __device__ void markAsCandidate(
       // TODO: handle collision!
     } break;
     case stateNoiseOrBorder: {
-      cluster[pointIdx] = currentClusterId;
+      td.clusters[pointIdx] = td.currentClusterId;
     } break;
     case stateUnderInspection: {
-      (void)atomicCAS(&cluster[pointIdx], 0, currentClusterId);
+      (void)atomicCAS(&td.clusters[pointIdx], 0, td.currentClusterId);
     } break;
     default:
       ; // do nothing
@@ -85,12 +94,9 @@ static __device__ void markAsCandidate(
 }
 
 static __device__ void processObject(
-  float px, float py, IdxType myselfIdx,
-  float * xs, float * ys, IdxType pointIdx,
-  IdxType currentClusterId,
-  IdxType * cluster, unsigned int * pointState,
-  IdxType * s_neighborBuffer, IdxType * s_neighborCount,
-  bool * collisionMatrix, IdxType * seedList, IdxType * seedClusterIds, IdxType * seedLength, IdxType * seedReserved,
+  ThreadData const & td,
+  float px, float py,
+  float const * xs, float const * ys, IdxType pointIdx,
   IdxType coreThreshold, float rsq
 ) {
   int lane = threadIdx.x % 32;
@@ -102,17 +108,17 @@ static __device__ void processObject(
     int leaderLane = __ffs(neighborMask) - 1;
     int nNeighbors = __popc(neighborMask);
     int oldNeighborCount = 0;
-    if (lane == leaderLane) oldNeighborCount = atomicAdd(s_neighborCount, nNeighbors);
+    if (lane == leaderLane) oldNeighborCount = atomicAdd(td.neighborCount, nNeighbors);
     oldNeighborCount = __shfl_sync(neighborMask, oldNeighborCount, leaderLane);
     if (oldNeighborCount < coreThreshold && oldNeighborCount + nNeighbors >= coreThreshold && lane == leaderLane) {
-      cluster[myselfIdx] = currentClusterId;
-      pointState[myselfIdx] = stateCore;
+      td.clusters[td.pointBeingProcessedIdx] = td.currentClusterId;
+      td.pointStates[td.pointBeingProcessedIdx] = stateCore;
     }
     int h = oldNeighborCount + __popc(neighborMask & ((1u << lane) - 1));
     if (h >= coreThreshold) {
-      markAsCandidate(currentClusterId, pointIdx, collisionMatrix, cluster, pointState, seedList, seedClusterIds, seedLength, seedReserved);
+      markAsCandidate(td, pointIdx);
     } else {
-      s_neighborBuffer[h] = pointIdx;
+      td.neighborBuffer[h] = pointIdx;
     }
   }
 }
@@ -123,7 +129,7 @@ static __device__ void processObject(
 static __global__ void kernel_clusterExpansion(
   IdxType * cluster, unsigned int * pointState,
   bool * collisionMatrix,
-  float * xs, float * ys, IdxType n,
+  float const * xs, float const * ys, IdxType n,
   IdxType * seedLists, unsigned int * seedClusterIds, IdxType * seedLengths,
   IdxType coreThreshold, float rsq
 ) {
@@ -132,64 +138,72 @@ static __global__ void kernel_clusterExpansion(
   unsigned int threadGroupIdx = blockIdx.x;
   unsigned int stride = blockDim.x;
 
-  IdxType * neighborBuffer = (IdxType *)sMem; // Length: coreThreshold elements
-  IdxType * neighborCount = (IdxType *) (sMem + (coreThreshold * sizeof(IdxType) + 127) / 128 * 128);
-  IdxType * seedReserved = neighborCount + 1;
+  ThreadData td;
+  td.clusters = cluster;
+  td.pointStates = pointState;
+  td.collisionMatrix = collisionMatrix;
+
+  td.neighborBuffer = (IdxType *)sMem; // Length: coreThreshold elements
+  td.neighborCount = (IdxType *) (sMem + (coreThreshold * sizeof(IdxType) + 127) / 128 * 128);
+  td.seedReserved = td.neighborCount + 1;
   static_assert(128 % alignof(IdxType) == 0, "");
   
-  if (threadIdx.x == 0) *neighborCount = 0;
+  if (threadIdx.x == 0) *td.neighborCount = 0;
 
-  IdxType seedLength = seedLengths[threadGroupIdx];
+  td.seedLength = &seedLengths[threadGroupIdx];
+  td.seedList = &seedLists[maxSeedLength * threadGroupIdx];
+  td.seedClusterIds = &seedClusterIds[maxSeedLength * threadGroupIdx];
+
+  IdxType seedLength = *td.seedLength;
 
   __syncthreads();
 
   if (seedLength > 0) {
     --seedLength;
 
-    if (threadIdx.x == 0) { seedLengths[threadGroupIdx] = seedLength; *seedReserved = seedLength; }
+    if (threadIdx.x == 0) { *td.seedLength = seedLength; *td.seedReserved = seedLength; }
 
     __syncthreads();
     
-    IdxType seedPointIdx = seedLists[maxSeedLength * threadGroupIdx + seedLength];
-    unsigned int currentClusterId = seedClusterIds[maxSeedLength * threadGroupIdx + seedLength];
-    if (currentClusterId == 0) {
-      currentClusterId = seedPointIdx + 1;
+    td.pointBeingProcessedIdx = td.seedList[seedLength];
+    td.currentClusterId = td.seedClusterIds[seedLength];
+    if (td.currentClusterId == 0) {
+      td.currentClusterId = td.pointBeingProcessedIdx + 1;
     }
-    if (threadIdx.x == 0) pointState[seedPointIdx] = stateUnderInspection;
+    if (threadIdx.x == 0) td.pointStates[td.pointBeingProcessedIdx] = stateUnderInspection;
 
     __syncthreads();
 
-    float x = xs[seedPointIdx], y = ys[seedPointIdx];
+    float x = xs[td.pointBeingProcessedIdx], y = ys[td.pointBeingProcessedIdx];
     {
       IdxType strideIdx = 0;
       for (; strideIdx < (n - 1) / stride; ++strideIdx) {
         processObject(
-          x, y, seedPointIdx, xs, ys, strideIdx * stride + threadIdx.x, currentClusterId, cluster, 
-          pointState, neighborBuffer, neighborCount, collisionMatrix, &seedLists[maxSeedLength * threadGroupIdx], &seedClusterIds[maxSeedLength * threadGroupIdx],
-          &seedLengths[threadGroupIdx], seedReserved, coreThreshold, rsq
+          td,
+          x, y,
+          xs, ys, strideIdx * stride + threadIdx.x,
+          coreThreshold, rsq
         );
       }
       if (threadIdx.x < n - strideIdx * stride) {
         processObject(
-          x, y, seedPointIdx, xs, ys, strideIdx * stride + threadIdx.x, currentClusterId, cluster,
-          pointState, neighborBuffer, neighborCount, collisionMatrix, &seedLists[maxSeedLength * threadGroupIdx], &seedClusterIds[maxSeedLength * threadGroupIdx],
-          &seedLengths[threadGroupIdx], seedReserved, coreThreshold, rsq
+          td,
+          x, y,
+          xs, ys, strideIdx * stride + threadIdx.x,
+          coreThreshold, rsq
         );
       }
     }
 
     __syncthreads();
 
-    if (*neighborCount >= coreThreshold) {
+    if (*td.neighborCount >= coreThreshold) {
       //if (threadIdx.x == 0) pointState[seedPointIdx] = stateCore;
       for (int i = threadIdx.x; i < coreThreshold; i += stride) {
-        markAsCandidate(
-          currentClusterId, neighborBuffer[i], collisionMatrix, cluster, pointState,
-          &seedLists[maxSeedLength * threadGroupIdx], &seedClusterIds[maxSeedLength * threadGroupIdx], &seedLengths[threadGroupIdx], seedReserved
-        );
+        markAsCandidate(td, td.neighborBuffer[i]);
       }
     } else {
-      if (threadIdx.x == 0) pointState[seedPointIdx] = stateNoiseOrBorder;
+      if (threadIdx.x == 0) td.pointStates[td.pointBeingProcessedIdx] = stateNoiseOrBorder;
     }
 
   }

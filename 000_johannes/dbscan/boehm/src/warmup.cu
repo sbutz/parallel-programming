@@ -54,12 +54,12 @@ void prefixScanOnDevice(IdxType ** res, IdxType * dest1, IdxType * dest2, IdxTyp
 }
 
 void warmup() {
-  constexpr size_t sz64Mi = (size_t)1 << 26;
+  constexpr size_t sz512Mi = (size_t)1 << 29;
   IdxType * tempAry, * temp;
-  CUDA_CHECK(cudaMalloc(&tempAry, 2 * sz64Mi * sizeof(IdxType) ))
+  CUDA_CHECK(cudaMalloc(&tempAry, 2 * sz512Mi * sizeof(IdxType) ))
   for (int i = 0; i < 5; ++i) {
     prefixScanOnDevice(
-      &temp, tempAry, tempAry + sz64Mi, tempAry + sz64Mi, sz64Mi
+      &temp, tempAry, tempAry + sz512Mi, tempAry + sz512Mi, sz512Mi
     );
   }
   (void)cudaFree(tempAry);
