@@ -83,7 +83,9 @@ static __device__ void markAsCandidate(
     case stateCore: {
       // TODO: handle collision!
     } break;
-    case stateNoiseOrBorder: {
+    case stateNoiseOrBorder:
+    case stateFree:
+    case stateReserved: {
       td.clusters[pointIdx] = td.currentClusterId;
     } break;
     case stateUnderInspection: {
@@ -235,31 +237,35 @@ static __global__ void kernel_clusterExpansion(
 
   __syncthreads();
 
+  unsigned int ourCollisions = *s_collisions;
+  unsigned int finishedBlocks;
   if (threadIdx.x == 0) {
-    unsigned int ourCollisions = *s_collisions;
 
     collisionMatrix[td.threadGroupIdx] = ourCollisions;
     processedIdxs[td.threadGroupIdx] = td.pointBeingProcessedIdx;
     __threadfence();
-    unsigned int finishedBlocks = atomicOr(syncCounter, 1u << td.threadGroupIdx) & ~(1u << td.threadGroupIdx);
+    finishedBlocks = atomicOr(syncCounter, 1u << td.threadGroupIdx) & ~(1u << td.threadGroupIdx);
+  }
 
-    for (int i = 0; i < gridDim.x; ++i) {
-      if ((1u << i) & finishedBlocks) {
-        if ((collisionMatrix[i] && (1u << td.threadGroupIdx)) || (ourCollisions & (1u << i))) {
-          // handle collision
-          if (*td.neighborCount >= coreThreshold) {
-            IdxType otherIdx = processedIdxs[i];
-            // we are core
-            if (td.pointStates[i] == stateCore) {
-              // mark conflict in union-find datastructure
-            } else {
-              td.clusters[i] = td.currentClusterId;
-            }
+  if (threadIdx.x < gridDim.x) {
+    // first warp does the job -- works as long as nBlocks <= 32
+    unsigned int mask = (1u << gridDim.x) - 1;
+    finishedBlocks = __shfl_sync(mask, finishedBlocks, 0);
+    if ((1u << threadIdx.x) & finishedBlocks) {
+      if ((collisionMatrix[threadIdx.x] && (1u << td.threadGroupIdx)) || (ourCollisions & (1u << threadIdx.x))) {
+        // handle collision
+        IdxType otherIdx = processedIdxs[threadIdx.x];
+        if (*td.neighborCount >= coreThreshold) {
+          // we are core
+          if (td.pointStates[otherIdx] == stateCore) {
+            // mark conflict in union-find datastructure
           } else {
-            // we are noise
-            if (td.pointStates[i] == stateCore) {
-              td.clusters[td.pointBeingProcessedIdx] = td.clusters[i];
-            }
+            td.clusters[otherIdx] = td.currentClusterId;
+          }
+        } else {
+          // we are noise
+          if (td.pointStates[otherIdx] == stateCore) {
+            td.clusters[td.pointBeingProcessedIdx] = td.clusters[otherIdx];
           }
         }
       }
