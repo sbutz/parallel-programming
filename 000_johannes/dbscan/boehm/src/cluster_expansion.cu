@@ -112,6 +112,7 @@ static __device__ void processObject(
     oldNeighborCount = __shfl_sync(neighborMask, oldNeighborCount, leaderLane);
     if (oldNeighborCount < coreThreshold && oldNeighborCount + nNeighbors >= coreThreshold && lane == leaderLane) {
       td.clusters[td.pointBeingProcessedIdx] = td.currentClusterId;
+      __threadfence();
       td.pointStates[td.pointBeingProcessedIdx] = stateCore;
     }
     int h = oldNeighborCount + __popc(neighborMask & ((1u << lane) - 1));
