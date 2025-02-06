@@ -19,6 +19,7 @@ constexpr IdxType nChains = 512; // TODO: ??
 
 struct ThreadData {
   IdxType currentClusterId;
+  unsigned int threadGroupIdx;
   IdxType pointBeingProcessedIdx;
   bool * collisionMatrix;
   IdxType * clusters;
@@ -51,21 +52,33 @@ static __device__ void markAsCandidate(
   IdxType pointIdx
 ) {
   unsigned int state = td.pointStates[pointIdx];
+  unsigned int potentiallyFreeMask = __ballot_sync(__activemask(), state == stateFree);
   if (state == stateFree) {
-    IdxType oldReserved = atomicAdd(td.seedReserved, 1);
-    if (oldReserved < maxSeedLength) {
+    int lane = threadIdx.x % 32;
+    int leader = __ffs(potentiallyFreeMask) - 1;
+    int nPotentiallyFree = __popc(potentiallyFreeMask);
+    IdxType oldReserved;
+    if (lane == leader) oldReserved = atomicAdd(td.seedReserved, nPotentiallyFree);
+    oldReserved = __shfl_sync(potentiallyFreeMask, oldReserved, leader);
+    int potentialThreadPosition = __popc(potentiallyFreeMask & ((1u << (lane + 1)) - 1));
+    if (oldReserved < maxSeedLength && potentialThreadPosition <= maxSeedLength - oldReserved) {
       state = atomicCAS(&td.pointStates[pointIdx], stateFree, stateReserved);
+      unsigned int actuallyFreeMask = __ballot_sync(__activemask(), state == stateFree);
+      int nActuallyFree = __popc(actuallyFreeMask);
+      int actualLeader = __ffs(actuallyFreeMask) - 1;
       if (state == stateFree) {
-        int h = atomicAdd(td.seedLength, 1);
-        td.seedList[h] = pointIdx; td.seedClusterIds[h] = td.currentClusterId;
-      } else {
-        atomicSub(td.seedReserved, 1);
+        int h;
+        if (lane == actualLeader) h = atomicAdd(td.seedLength, __popc(actuallyFreeMask));
+        h = __shfl_sync(actuallyFreeMask, h, actualLeader);
+        int offset = __popc(actuallyFreeMask & ((1u << lane) - 1));
+        td.seedList[h + offset] = pointIdx; td.seedClusterIds[h + offset] = td.currentClusterId;
       }
+      if (lane == leader) atomicSub(td.seedReserved, nPotentiallyFree - nActuallyFree);
     } else {
-      atomicSub(td.seedReserved, 1);
+      if (lane == leader) atomicSub(td.seedReserved, nPotentiallyFree);
     }
   }
-  switch (state) {
+  switch (state & stateStateBitsMask) {
     case stateCore: {
       // TODO: handle collision!
     } break;
@@ -73,6 +86,7 @@ static __device__ void markAsCandidate(
       td.clusters[pointIdx] = td.currentClusterId;
     } break;
     case stateUnderInspection: {
+      //printf("inspection\n");
       (void)atomicCAS(&td.clusters[pointIdx], 0, td.currentClusterId);
     } break;
     default:
@@ -136,10 +150,11 @@ static __global__ void kernel_clusterExpansion(
 ) {
   extern __shared__ unsigned char sMem []; // coreThreshold IdxType values in blocks of 128 bytes + 2 IdxType value
 
-  unsigned int threadGroupIdx = blockIdx.x;
   unsigned int stride = blockDim.x;
 
   ThreadData td;
+  td.threadGroupIdx = blockIdx.x;
+
   td.clusters = cluster;
   td.pointStates = pointState;
   td.collisionMatrix = collisionMatrix;
@@ -149,11 +164,12 @@ static __global__ void kernel_clusterExpansion(
   td.seedReserved = td.neighborCount + 1;
   static_assert(128 % alignof(IdxType) == 0, "");
   
+
   if (threadIdx.x == 0) *td.neighborCount = 0;
 
-  td.seedLength = &seedLengths[threadGroupIdx];
-  td.seedList = &seedLists[maxSeedLength * threadGroupIdx];
-  td.seedClusterIds = &seedClusterIds[maxSeedLength * threadGroupIdx];
+  td.seedLength = &seedLengths[td.threadGroupIdx];
+  td.seedList = &seedLists[maxSeedLength * td.threadGroupIdx];
+  td.seedClusterIds = &seedClusterIds[maxSeedLength * td.threadGroupIdx];
 
   IdxType seedLength = *td.seedLength;
 
@@ -171,7 +187,7 @@ static __global__ void kernel_clusterExpansion(
     if (td.currentClusterId == 0) {
       td.currentClusterId = td.pointBeingProcessedIdx + 1;
     }
-    if (threadIdx.x == 0) td.pointStates[td.pointBeingProcessedIdx] = stateUnderInspection;
+    if (threadIdx.x == 0) td.pointStates[td.pointBeingProcessedIdx] = stateUnderInspection | td.threadGroupIdx;
 
     __syncthreads();
 
