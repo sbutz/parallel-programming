@@ -30,6 +30,7 @@ struct ThreadData {
   IdxType * seedReserved;
   IdxType * neighborBuffer;
   IdxType * neighborCount;
+  bool * s_collisions;
 };
 
 // collisionMatrix:
@@ -49,7 +50,6 @@ struct ThreadData {
 //         (i, j) -> i * n - i * (i + 1) / 2 + j
 static __device__ void markAsCandidate(
   ThreadData const & td,
-  unsigned int * collisions,
   IdxType pointIdx
 ) {
   unsigned int state = td.pointStates[pointIdx];
@@ -89,7 +89,7 @@ static __device__ void markAsCandidate(
       td.clusters[pointIdx] = td.currentClusterId;
     } break;
     case stateUnderInspection: {
-      *collisions |= (1u << (state & stateThreadGroupIdxMask));
+      td.s_collisions[state & stateThreadGroupIdxMask] = true;
       //printf("inspection\n");
       //(void)atomicCAS(&td.clusters[pointIdx], 0, td.currentClusterId);
     } break;
@@ -113,7 +113,6 @@ static __device__ void markAsCandidate(
 
 static __device__ void processObject(
   ThreadData const & td,
-  unsigned int * collisions,
   float px, float py,
   float const * xs, float const * ys, IdxType pointIdx,
   IdxType coreThreshold, float rsq
@@ -136,12 +135,27 @@ static __device__ void processObject(
     }
     int h = oldNeighborCount + __popc(neighborMask & ((1u << lane) - 1));
     if (h >= coreThreshold) {
-      markAsCandidate(td, collisions, pointIdx);
+      markAsCandidate(td, pointIdx);
     } else {
       td.neighborBuffer[h] = pointIdx;
     }
   }
 }
+
+static __device__ __forceinline__ void lockMutex(unsigned int * d_mutex) {
+  unsigned int old;
+  int ns = 1;
+  do {
+    old = atomicCAS(d_mutex, 0, 1);
+    __nanosleep(ns);
+    if (ns < 256) ns *= 2;
+  } while (!old);
+}
+
+static __device__ __forceinline__ void unlockMutex(unsigned int * d_mutex) {
+  *d_mutex = 0;
+}
+
 
 
 // len(seedLists) must equal maxSeedLength * maxNumberOfThreadGroups
@@ -150,13 +164,18 @@ static __global__ void kernel_clusterExpansion(
   IdxType * cluster, unsigned int * pointState,
   float const * xs, float const * ys, IdxType n,
   IdxType * seedLists, unsigned int * seedClusterIds, IdxType * seedLengths,
-  unsigned int * syncCounter, unsigned int * collisionMatrix, IdxType * processedIdxs,
+  unsigned int * syncCounter, CollisionHandlingData collisionHandlingData, IdxType * processedIdxs,
   IdxType coreThreshold, float rsq
 ) {
-  extern __shared__ unsigned char sMem []; // coreThreshold IdxType values in blocks of 128 bytes + 2 IdxType value
-  unsigned int collisions = 0;
+  // shared memory:
+  //   neighborBuffer: coreThreshold IdxType values in blocks of 128 bytes
+  //   neighborCount:  1 IdxType (aligned to a 128 byte block)
+  //   seedReserved:   1 IdxType
+  //   s_collisions:   nBlock bools, aligned to a 128 byte block
+  extern __shared__ unsigned char sMem [];
 
   unsigned int stride = blockDim.x;
+  unsigned int nBlocks = gridDim.x;
 
   ThreadData td;
   td.threadGroupIdx = blockIdx.x;
@@ -167,11 +186,13 @@ static __global__ void kernel_clusterExpansion(
   td.neighborBuffer = (IdxType *)sMem; // Length: coreThreshold elements
   td.neighborCount = (IdxType *) (sMem + (coreThreshold * sizeof(IdxType) + 127) / 128 * 128);
   td.seedReserved = td.neighborCount + 1;
-  unsigned int * s_collisions = (unsigned int *)td.seedReserved + 1;
+  td.s_collisions = (bool *) (sMem + (nBlocks * sizeof(bool) + 127) / 128 * 128 + 128);
+  bool * s_doneMask = (bool *) (sMem + (nBlocks * sizeof(bool) + 127) / 128 * 128 + 128);
   static_assert(128 % alignof(IdxType) == 0, "");
   static_assert(alignof(IdxType) == alignof(unsigned int) && sizeof(IdxType) == sizeof(unsigned int), "");
 
-  if (threadIdx.x == 0) { *td.neighborCount = 0; *s_collisions = 0; }
+  if (threadIdx.x == 0) { *td.neighborCount = 0; }
+  for (unsigned int i = threadIdx.x; i < nBlocks; i += stride) td.s_collisions[i] = false;
 
   td.seedLength = &seedLengths[td.threadGroupIdx];
   td.seedList = &seedLists[maxSeedLength * td.threadGroupIdx];
@@ -202,7 +223,7 @@ static __global__ void kernel_clusterExpansion(
       IdxType strideIdx = 0;
       for (; strideIdx < (n - 1) / stride; ++strideIdx) {
         processObject(
-          td, &collisions,
+          td,
           x, y,
           xs, ys, strideIdx * stride + threadIdx.x,
           coreThreshold, rsq
@@ -210,7 +231,7 @@ static __global__ void kernel_clusterExpansion(
       }
       if (threadIdx.x < n - strideIdx * stride) {
         processObject(
-          td, &collisions,
+          td,
           x, y,
           xs, ys, strideIdx * stride + threadIdx.x,
           coreThreshold, rsq
@@ -223,38 +244,36 @@ static __global__ void kernel_clusterExpansion(
     if (*td.neighborCount >= coreThreshold) {
       //if (threadIdx.x == 0) pointState[seedPointIdx] = stateCore;
       for (int i = threadIdx.x; i < coreThreshold; i += stride) {
-        markAsCandidate(td, &collisions, td.neighborBuffer[i]);
+        markAsCandidate(td, td.neighborBuffer[i]);
       }
     } else {
       if (threadIdx.x == 0) td.pointStates[td.pointBeingProcessedIdx] = stateNoiseOrBorder;
     }
   }
 
-  int lane = threadIdx.x % 32;
-  #pragma unroll
-  for (int i = 1; i < 32; i *= 2) collisions |= __shfl_down_sync(0xffffffff, collisions, i);
-  if (lane == 0) (void)atomicOr(s_collisions, collisions);
-
   __syncthreads();
 
-  unsigned int ourCollisions = *s_collisions;
-  unsigned int finishedBlocks;
-  if (threadIdx.x == 0) {
+  // copy our collisions to global memory
+  for (unsigned int i = threadIdx.x; i < nBlocks; i += stride) collisionHandlingData.d_collisionMatrix[nBlocks * td.threadGroupIdx + i] = td.s_collisions[i];
+  if (threadIdx.x == 0) { lockMutex(collisionHandlingData.d_mutex); processedIdxs[td.threadGroupIdx] = td.pointBeingProcessedIdx; }
 
-    collisionMatrix[td.threadGroupIdx] = ourCollisions;
-    processedIdxs[td.threadGroupIdx] = td.pointBeingProcessedIdx;
-    __threadfence();
-    finishedBlocks = atomicOr(syncCounter, 1u << td.threadGroupIdx) & ~(1u << td.threadGroupIdx);
-  }
+  __threadfence();
 
-  if (threadIdx.x < gridDim.x) {
-    // first warp does the job -- works as long as nBlocks <= 32
-    unsigned int mask = (1u << gridDim.x) - 1;
-    finishedBlocks = __shfl_sync(mask, finishedBlocks, 0);
-    if ((1u << threadIdx.x) & finishedBlocks) {
-      if ((collisionMatrix[threadIdx.x] && (1u << td.threadGroupIdx)) || (ourCollisions & (1u << threadIdx.x))) {
-        // handle collision
-        IdxType otherIdx = processedIdxs[threadIdx.x];
+  for (unsigned int i = threadIdx.x; i < nBlocks; i += stride) s_doneMask[i] = collisionHandlingData.d_doneMask[i];
+  if (threadIdx.x == 0) collisionHandlingData.d_doneMask[td.threadGroupIdx] = true;
+
+  __threadfence();
+
+  if (threadIdx.x == 0) unlockMutex(collisionHandlingData.d_mutex);
+
+  __threadfence();
+
+  for (unsigned int i = threadIdx.x; i < nBlocks; i += stride) {
+    if (i != td.threadGroupIdx && s_doneMask[i]) {
+      bool collision = td.s_collisions[i] || collisionHandlingData.d_collisionMatrix[i * nBlocks + td.threadGroupIdx];
+      if (collision) {
+        IdxType otherIdx = processedIdxs[i];
+        //printf("%u\n", otherIdx);
         if (*td.neighborCount >= coreThreshold) {
           // we are core
           if (td.pointStates[otherIdx] == stateCore) {
@@ -276,7 +295,7 @@ static __global__ void kernel_clusterExpansion(
 void allocateDeviceMemory(
   unsigned int ** d_pointStates, IdxType ** d_clusters,
   IdxType ** d_seedLists, IdxType ** d_seedClusterIds, IdxType ** d_seedLengths,
-  unsigned int ** d_syncCounter, unsigned int ** d_collisionMatrix, IdxType ** d_processedIdxs,
+  unsigned int ** d_syncCounter, CollisionHandlingData * collisionHandlingData, IdxType ** d_processedIdxs,
   int nBlocks,
   IdxType n
 ) {
@@ -292,7 +311,15 @@ void allocateDeviceMemory(
   CUDA_CHECK(cudaMalloc(d_seedLengths, nBlocks * sizeof(IdxType)))
   CUDA_CHECK(cudaMemset(*d_seedLengths, 0, nBlocks * sizeof(IdxType)))
   CUDA_CHECK(cudaMalloc(d_syncCounter, sizeof(unsigned int)))
-  CUDA_CHECK(cudaMalloc(d_collisionMatrix, nBlocks * sizeof(unsigned int)))
+
+  auto chdSizes = CollisionHandlingData::calculateSizes(nBlocks);
+  unsigned int chdTotalSize = chdSizes.szMutex + chdSizes.szDoneMask + chdSizes.szCollisionMatrix;
+  char * d_memCollisionData;
+  CUDA_CHECK(cudaMalloc(&d_memCollisionData, chdTotalSize))
+  collisionHandlingData->d_mutex = (unsigned int *)d_memCollisionData;
+  CUDA_CHECK(cudaMemset(collisionHandlingData->d_mutex, 0, sizeof(unsigned int)))
+  collisionHandlingData->d_doneMask = (bool *)(d_memCollisionData + chdSizes.szMutex);
+  collisionHandlingData->d_collisionMatrix = (bool *)(d_memCollisionData + chdSizes.szMutex + chdSizes.szDoneMask);
   CUDA_CHECK(cudaMalloc(d_processedIdxs, nBlocks * sizeof(IdxType)))
 }
 
@@ -341,11 +368,11 @@ void findClusters(
   unsigned int * d_pointStates, IdxType * d_clusters,
   float * xs, float * ys, IdxType n,
   IdxType * d_seedLists, IdxType * d_seedClusterIds, IdxType * d_seedLengths,
-  unsigned int * d_syncCounter, unsigned int * d_collisionMatrix, IdxType * d_processedIdxs,
+  unsigned int * d_syncCounter, CollisionHandlingData collisionHandlingData, IdxType * d_processedIdxs,
   IdxType coreThreshold, float rsq
 ) {
   constexpr int nBlocks = 6;
-  constexpr int nThreadsPerBlock = 128;
+  constexpr int nThreadsPerBlock = 512;
 
   IdxType * d_foundAt;
   CUDA_CHECK(cudaMalloc(&d_foundAt, sizeof(IdxType)))
@@ -374,8 +401,9 @@ void findClusters(
     if (!stillWork) break;
 
     CUDA_CHECK(cudaMemset(d_syncCounter, 0, sizeof(unsigned int)))
-    kernel_clusterExpansion <<<dim3(nBlocks), dim3(nThreadsPerBlock), ( (coreThreshold * sizeof(IdxType) + 127) / 128 * 128 + 2 * sizeof(IdxType) ) >>> (
-      d_clusters, d_pointStates, xs, ys, n, d_seedLists, d_seedClusterIds, d_seedLengths, d_syncCounter, d_collisionMatrix, d_processedIdxs, coreThreshold, rsq
+    CUDA_CHECK(cudaMemset((void *)collisionHandlingData.d_doneMask, 0, nBlocks * sizeof(bool)))
+    kernel_clusterExpansion <<<dim3(nBlocks), dim3(nThreadsPerBlock), ( (coreThreshold * sizeof(IdxType) + 127) / 128 * 128 + 3 * 128 ) >>> (
+      d_clusters, d_pointStates, xs, ys, n, d_seedLists, d_seedClusterIds, d_seedLengths, d_syncCounter, collisionHandlingData, d_processedIdxs, coreThreshold, rsq
     );
     CUDA_CHECK(cudaGetLastError())
     CUDA_CHECK(cudaDeviceSynchronize())
