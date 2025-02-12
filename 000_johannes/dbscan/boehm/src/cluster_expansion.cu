@@ -260,26 +260,25 @@ static __global__ void kernel_clusterExpansion(
 
   // copy our collisions to global memory
   for (unsigned int i = threadIdx.x; i < nBlocks; i += stride) collisionHandlingData.d_collisionMatrix[nBlocks * td.threadGroupIdx + i] = td.s_collisions[i];
-  if (threadIdx.x == 0) { lockMutex(collisionHandlingData.d_mutex); }
+  //if (threadIdx.x == 0) { lockMutex(collisionHandlingData.d_mutex); }
 
   __threadfence();
 
-  for (unsigned int i = threadIdx.x; i < nBlocks; i += stride) s_doneWithIdx[i] = collisionHandlingData.d_doneWithIdx[i];
   if (threadIdx.x == 0) collisionHandlingData.d_doneWithIdx[td.threadGroupIdx] = td.pointBeingProcessedIdx;
 
   __threadfence();
 
-  if (threadIdx.x == 0) unlockMutex(collisionHandlingData.d_mutex);
+  if (threadIdx.x == 0) (void)atomicAdd(collisionHandlingData.d_mutex, 1);
+  //if (threadIdx.x == 0) unlockMutex(collisionHandlingData.d_mutex);
 
   __threadfence();
 
   for (unsigned int i = threadIdx.x; i < nBlocks; i += stride) {
     if (i != td.threadGroupIdx) {
-      IdxType otherIdx = s_doneWithIdx[i];
+      IdxType otherIdx = collisionHandlingData.d_doneWithIdx[i];
       if (otherIdx) {
         bool collision = td.s_collisions[i] || collisionHandlingData.d_collisionMatrix[i * nBlocks + td.threadGroupIdx];
         if (collision) {
-          IdxType otherIdx = s_doneWithIdx[i];
           //printf("%u\n", otherIdx);
           if (*td.neighborCount >= coreThreshold) {
             // we are core
