@@ -14,25 +14,25 @@ DPoints copyPointsToDevice(float const * x, float const * y, IdxType n);
 
 struct CollisionHandlingData {
   unsigned int * d_mutex;
-  volatile bool * d_doneMask;
+  volatile IdxType * d_doneWithIdx;
   volatile bool * d_collisionMatrix;
 
   constexpr static auto calculateSizes(unsigned int nBlocks) {
     struct Result {
       unsigned int szMutex;
-      unsigned int szDoneMask;
+      unsigned int szDoneWithIdx;
       unsigned int szCollisionMatrix;
     };
     constexpr size_t nUintBits = 8 * sizeof(unsigned int);
     unsigned int szMutex = 128;
-    unsigned int szDoneMask = (nBlocks + 127) / 128;
+    unsigned int szDoneWithIdx = (nBlocks * sizeof(IdxType) + 127) / 128 * 128;
     unsigned int szCollisionMatrix = nBlocks * nBlocks;
-    return Result { szMutex, szDoneMask, szCollisionMatrix };
+    return Result { szMutex, szDoneWithIdx, szCollisionMatrix };
   }
 
   constexpr static size_t calculateSize(unsigned int nBlocks) {
     auto sizes = calculateSizes(nBlocks);
-    return sizes.szMutex + sizes.szDoneMask + sizes.szCollisionMatrix;
+    return sizes.szMutex + sizes.szDoneWithIdx + sizes.szCollisionMatrix;
   }
 };
 
