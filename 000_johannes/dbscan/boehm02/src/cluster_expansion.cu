@@ -4,6 +4,7 @@
 
 #include <iostream>
 #include <cuda.h>
+#include <vector>
 
 DPoints copyPointsToDevice(float const * x, float const * y, IdxType n) {
   float * d_x, * d_y;
@@ -37,23 +38,46 @@ static __device__ void unionizeClusters(
 ) {
   //printf("%u %u %u %u\n", point1Idx, point2Idx, td.clusters[point1Idx], td.clusters[point2Idx]);
 
-  IdxType i, j, top2, top1;
+  IdxType grandchild, child, parent, top2, top1;
 
-  j = td.currentClusterId;
-  do { i = j; j = td.clusters[i - 1]; } while (j != i);
-  top1 = i;
+  child = td.currentClusterId;
+  parent = td.clusters[child - 1];
+  if (child != parent) {
+    child = parent;
+    parent = td.clusters[child - 1];
+    if (child != parent) {
+      for (;;) {
+        grandchild = child;
+        child = parent;
+        parent = td.clusters[child - 1];
+        if (child == parent) break;
+        (void)atomicCAS(&td.clusters[grandchild - 1], child, parent);
+      }
+    }
+  }
+  top1 = child;
 
-  j = point2Idx + 1;
+  parent = point2Idx + 1;
   for (;;) {
-    do { i = j; j = td.clusters[i - 1]; } while (j != i);
-    top2 = i;
+    child = parent;
+    parent = td.clusters[child - 1];
+    if (child != parent) {
+      for (;;) {
+        grandchild = child;
+        child = parent;
+        parent = td.clusters[child - 1];
+        if (child == parent) break;
+        (void)atomicCAS(&td.clusters[grandchild - 1], child, parent);
+      }
+    }
+    top2 = child;
 
     if (top1 == top2) break;
     if (top1 > top2) { IdxType tmp = top2; top2 = top1; top1 = tmp; }
 
     IdxType old = atomicCAS(&td.clusters[top2 - 1], top2, top1);
     if (old == top2) break;
-    j = top2;
+    parent = top2;
   }
   td.currentClusterId = top1;
 }
@@ -253,7 +277,7 @@ static __global__ void kernel_clusterExpansion(
             // we are core
             if (td.pointStates[otherIdx] == stateCore) {
               // mark conflict in union-find datastructure
-              //unionizeClusters(td, td.currentClusterId, otherIdx);
+              unionizeClusters(td, otherIdx);
             } else {
               td.clusters[otherIdx] = td.currentClusterId;
             }
@@ -355,5 +379,25 @@ void findClusters(
 
     if (n - startPos <= nBlocks) break;
     startPos += nBlocks;
+  }
+}
+
+void unionizeCpu(std::vector<IdxType> & clusters) {
+  std::vector<IdxType> stack;
+  for (IdxType i = 0; i < clusters.size(); ++i) {
+    IdxType child = i + 1;
+    IdxType parent = clusters[child - 1];
+    if (parent == 0) continue; // noise
+    for (;;) {
+      stack.push_back(child);
+      child = parent;
+      parent = clusters[child - 1];
+      if (child == parent) break;
+    }
+    IdxType top = stack.back(); stack.pop_back();
+    while (stack.size() > 0) {
+      IdxType current = stack.back(); stack.pop_back();
+      clusters[current - 1] = top;
+    }
   }
 }
