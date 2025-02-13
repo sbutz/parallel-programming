@@ -328,3 +328,41 @@ void unionizeCpu(std::vector<IdxType> & clusters) {
     }
   }
 }
+
+static __global__ void kernel_unionize(IdxType * clusters, IdxType n) {
+  unsigned int tid = blockIdx.x * blockDim.x + threadIdx.x;
+  unsigned int stride = blockDim.x * gridDim.x;
+
+  IdxType strideBegin = 0;
+  for (;;) {
+    if (tid < n - strideBegin) {
+      IdxType idx = strideBegin + tid;
+      IdxType cl = idx + 1;
+      IdxType p = clusters[idx];
+      if (p != 0 && p != cl) {
+        for (;;) {
+          cl = p;
+          p = clusters[cl - 1];
+          if (p == cl) break;
+        }
+        IdxType top = cl;
+        cl = idx + 1;
+        for (;;) {
+          p = atomicExch(&clusters[cl - 1], top);
+          if (p == top) break;
+        }
+      }
+    }
+    if (n - strideBegin <= stride) break;
+    strideBegin += stride;
+  }
+}
+
+void unionizeGpu(IdxType * d_clusters, IdxType n) {
+  constexpr unsigned int nBlocks = 6;
+  constexpr unsigned int nThreadsPerBlock = 512;
+
+  kernel_unionize <<<dim3(nBlocks), dim3(nThreadsPerBlock)>>> (d_clusters, n);
+  CUDA_CHECK(cudaGetLastError())
+  CUDA_CHECK(cudaDeviceSynchronize())
+}

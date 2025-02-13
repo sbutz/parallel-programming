@@ -61,5 +61,6 @@ void findClusters(
 );
 
 void unionizeCpu(std::vector<IdxType> & clusters);
+void unionizeGpu(IdxType * d_clusters, IdxType n);
 
 #endif

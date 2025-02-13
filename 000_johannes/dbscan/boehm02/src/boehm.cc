@@ -201,6 +201,7 @@ static auto runDbscan (
   findClusters(
     d_pointStates, d_clusters, points.d_x, points.d_y, points.n, collisionHandlingData, coreThreshold, r * r
   );
+  unionizeGpu(d_clusters, points.n);
 
   std::vector<unsigned int> states(points.n);
   CUDA_CHECK(cudaMemcpy(states.data(), d_pointStates, points.n * sizeof(unsigned int), cudaMemcpyDeviceToHost))
@@ -212,7 +213,7 @@ static auto runDbscan (
   CUDA_CHECK(cudaEventSynchronize(stop));
   CUDA_CHECK(cudaEventElapsedTime(&profile->timeTotal, start, stop));
 
-  unionizeCpu(clusters);
+  //unionizeCpu(clusters);
   
   struct Result {
 //    DNeighborGraph g1;
