@@ -2,6 +2,7 @@
 #define CLUSTER_EXPANSION_H_
 
 #include "types.h"
+#include <vector>
 
 struct DPoints {
   IdxType n;
@@ -23,7 +24,6 @@ struct CollisionHandlingData {
       unsigned int szDoneWithIdx;
       unsigned int szCollisionMatrix;
     };
-    constexpr size_t nUintBits = 8 * sizeof(unsigned int);
     unsigned int szMutex = 128;
     unsigned int szDoneWithIdx = (nBlocks * sizeof(IdxType) + 127) / 128 * 128;
     unsigned int szCollisionMatrix = nBlocks * nBlocks;
@@ -59,5 +59,7 @@ void findClusters(
   CollisionHandlingData collisionHandlingData,
   IdxType coreThreshold, float rsq
 );
+
+void unionizeCpu(std::vector<IdxType> & clusters);
 
 #endif

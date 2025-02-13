@@ -15,10 +15,6 @@ DPoints copyPointsToDevice(float const * x, float const * y, IdxType n) {
   return { n, d_x, d_y };
 }
 
-constexpr IdxType maxSeedLength = 1024; // TODO: Could be larger!?
-constexpr IdxType nChains = 512; // TODO: ??
-
-
 struct ThreadData {
   IdxType currentClusterId;
   unsigned int threadGroupIdx;
@@ -36,8 +32,6 @@ static __device__ void unionizeClusters(
   ThreadData & td,
   IdxType point2Idx
 ) {
-  //printf("%u %u %u %u\n", point1Idx, point2Idx, td.clusters[point1Idx], td.clusters[point2Idx]);
-
   IdxType grandchild, child, parent, top2, top1;
 
   child = td.currentClusterId;
@@ -103,7 +97,7 @@ static __device__ void markAsCandidate(
 ) {
   if (pointIdx < td.beginCurrentlyProcessedIdx) {
     unsigned int state = td.pointStates[pointIdx];
-    if (state & stateStateBitsMask == stateCore) {
+    if (state == stateCore) {
       unionizeClusters(td, pointIdx);
     } else {
       // TODO: simple write should be sufficient
@@ -148,26 +142,6 @@ static __device__ void processObject(
   }
 }
 
-// make VS Code happy
-__device__ void __nanosleep(unsigned int);
-
-static __device__ __forceinline__ void lockMutex(unsigned int * d_mutex) {
-  unsigned int old;
-  int ns = 1;
-  do {
-    old = atomicCAS(d_mutex, 0, 1);
-    
-    __nanosleep(ns);
-    if (ns < 256) ns *= 2;
-  } while (!old);
-}
-
-static __device__ __forceinline__ void unlockMutex(unsigned int * d_mutex) {
-  *d_mutex = 0;
-}
-
-
-
 // len(seedLists) must equal maxSeedLength * maxNumberOfThreadGroups
 // shared memory required: ( (coreThreshold + 127) / 128 * 128 + 1 ) * sizeof(IdxType)
 static __global__ void kernel_clusterExpansion(
@@ -198,7 +172,6 @@ static __global__ void kernel_clusterExpansion(
   td.neighborBuffer = (IdxType *)sMem; // Length: coreThreshold elements
   td.neighborCount = (IdxType *) (sMem + (coreThreshold * sizeof(IdxType) + 127) / 128 * 128);
   td.s_collisions = (bool *) ((char *)td.neighborCount + 128);
-  IdxType * s_doneWithIdx = (IdxType *) ((char *)td.s_collisions + (nBlocks + 127) / 128 * 128);
   static_assert(128 % alignof(IdxType) == 0, "");
   static_assert(alignof(IdxType) == alignof(unsigned int) && sizeof(IdxType) == sizeof(unsigned int), "");
 
@@ -253,7 +226,6 @@ static __global__ void kernel_clusterExpansion(
 
   // copy our collisions to global memory
   for (unsigned int i = threadIdx.x; i < nBlocks; i += stride) collisionHandlingData.d_collisionMatrix[nBlocks * td.threadGroupIdx + i] = td.s_collisions[i];
-  //if (threadIdx.x == 0) { lockMutex(collisionHandlingData.d_mutex); }
 
   __threadfence();
 
@@ -262,7 +234,6 @@ static __global__ void kernel_clusterExpansion(
   __threadfence();
 
   if (threadIdx.x == 0) (void)atomicAdd(collisionHandlingData.d_mutex, 1);
-  //if (threadIdx.x == 0) unlockMutex(collisionHandlingData.d_mutex);
 
   __threadfence();
 
@@ -272,11 +243,9 @@ static __global__ void kernel_clusterExpansion(
       if (otherIdx) {
         bool collision = td.s_collisions[i] || collisionHandlingData.d_collisionMatrix[i * nBlocks + td.threadGroupIdx];
         if (collision) {
-          //printf("%u\n", otherIdx);
           if (*td.neighborCount >= coreThreshold) {
             // we are core
             if (td.pointStates[otherIdx] == stateCore) {
-              // mark conflict in union-find datastructure
               unionizeClusters(td, otherIdx);
             } else {
               td.clusters[otherIdx] = td.currentClusterId;
@@ -316,47 +285,6 @@ void allocateDeviceMemory(
   collisionHandlingData->d_collisionMatrix = (bool *)(d_memCollisionData + chdSizes.szMutex + chdSizes.szDoneWithIdx);
 }
 
-static __global__ void kernel_populateSeedLists(
-  IdxType * d_seedLists, IdxType * d_seedClusterIds, IdxType * d_seedLengths, IdxType nLists
-) {
-  unsigned int tid = blockDim.x * blockIdx.x + threadIdx.x;
-  unsigned int stride = gridDim.x * blockDim.x;
-  for (unsigned int i = tid; i < nLists; i += stride) {
-    d_seedLengths[i] = 1;
-    d_seedLists[i * maxSeedLength] = i; // TODO: Change later!!!
-    d_seedClusterIds[i * maxSeedLength] = i + 1; // TODO: Change later!!!
-  }
-}
-
-static __global__ void kernel_refillSeed(
-    IdxType * d_foundAt,
-    IdxType * d_seedLists, IdxType * d_seedClusterIds, IdxType * d_seedLengths, int k,
-    unsigned int * d_pointState, IdxType * d_clusters, IdxType n,
-    IdxType startPos
-) {
-    constexpr unsigned int wrp = 32;
-    IdxType result = (IdxType)-1;
-    for (IdxType strideIdx = startPos / wrp; strideIdx <= ((n - 1) / wrp); ++strideIdx) {
-        IdxType idx = strideIdx * wrp + threadIdx.x;
-        int unvisitedMask = __ballot_sync(0xffffffff, idx >= startPos && idx < n && !d_pointState[idx]);
-        if (unvisitedMask != 0) {
-            result = strideIdx * wrp + __ffs(unvisitedMask) - 1;
-            break;
-        }
-    }
-    if (threadIdx.x == 0) {
-      if (result == (IdxType)-1) {
-        *d_foundAt = result;
-      } else {
-        *d_foundAt = result;
-        d_pointState[result] = stateReserved2;
-        d_seedLists[k * maxSeedLength] = result;
-        d_seedClusterIds[k * maxSeedLength] = d_clusters[result];
-        d_seedLengths[k] = 1;
-      }
-    }
-}
-
 void findClusters(
   unsigned int * d_pointStates, IdxType * d_clusters,
   float * xs, float * ys, IdxType n,
@@ -387,14 +315,13 @@ void unionizeCpu(std::vector<IdxType> & clusters) {
   for (IdxType i = 0; i < clusters.size(); ++i) {
     IdxType child = i + 1;
     IdxType parent = clusters[child - 1];
-    if (parent == 0) continue; // noise
-    for (;;) {
+    if (parent == 0 || parent == child) continue; // noise
+    do {
       stack.push_back(child);
       child = parent;
       parent = clusters[child - 1];
-      if (child == parent) break;
-    }
-    IdxType top = stack.back(); stack.pop_back();
+    } while (parent != child);
+    IdxType top = child;
     while (stack.size() > 0) {
       IdxType current = stack.back(); stack.pop_back();
       clusters[current - 1] = top;

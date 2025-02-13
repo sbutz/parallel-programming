@@ -212,6 +212,8 @@ static auto runDbscan (
   CUDA_CHECK(cudaEventSynchronize(stop));
   CUDA_CHECK(cudaEventElapsedTime(&profile->timeTotal, start, stop));
 
+  unionizeCpu(clusters);
+  
   struct Result {
 //    DNeighborGraph g1;
     std::vector<unsigned int> states;
