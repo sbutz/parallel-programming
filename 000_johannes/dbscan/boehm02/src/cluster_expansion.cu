@@ -334,33 +334,35 @@ static __global__ void kernel_unionize(IdxType * clusters, IdxType n) {
   unsigned int stride = blockDim.x * gridDim.x;
 
   IdxType strideBegin = 0;
-  for (;;) {
-    if (tid < n - strideBegin) {
-      IdxType idx = strideBegin + tid;
-      IdxType cl = idx + 1;
-      IdxType p = clusters[idx];
-      if (p != 0 && p != cl) {
-        for (;;) {
-          cl = p;
-          p = clusters[cl - 1];
-          if (p == cl) break;
-        }
-        IdxType top = cl;
-        cl = idx + 1;
-        for (;;) {
-          p = atomicExch(&clusters[cl - 1], top);
-          if (p == top) break;
-        }
+
+  auto doWork = [&] {
+    IdxType idx = strideBegin + tid;
+    IdxType cl = idx + 1;
+    IdxType p = clusters[idx];
+    if (p != 0 && p != cl) {
+      for (;;) {
+        cl = p;
+        p = clusters[cl - 1];
+        if (p == cl) break;
+      }
+      IdxType top = cl;
+      cl = idx + 1;
+      for (;;) {
+        //p = atomicExch(&clusters[cl - 1], top);
+        p = clusters[cl - 1];
+        if (p == top) break;
+        clusters[cl - 1] = top;
       }
     }
-    if (n - strideBegin <= stride) break;
-    strideBegin += stride;
-  }
+  };
+
+  if (n > stride) for (; strideBegin < n - stride; strideBegin += stride) doWork();
+  if (tid < n - strideBegin) doWork();
 }
 
 void unionizeGpu(IdxType * d_clusters, IdxType n) {
   constexpr unsigned int nBlocks = 6;
-  constexpr unsigned int nThreadsPerBlock = 512;
+  constexpr unsigned int nThreadsPerBlock = 1024;
 
   kernel_unionize <<<dim3(nBlocks), dim3(nThreadsPerBlock)>>> (d_clusters, n);
   CUDA_CHECK(cudaGetLastError())
