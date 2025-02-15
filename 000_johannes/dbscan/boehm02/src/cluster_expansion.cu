@@ -71,10 +71,6 @@ static __device__ __forceinline__ unsigned int laneId() {
 }
 
 struct LargeStridePolicy {
-  // returns:
-  //   1 if append was possible and item was not last element
-  //   -1 if append was possible and item was last element
-  //   0 if append was not possible
   static __device__ auto tryAppendToNeighborBuffer(
     IdxType * s_neighborBuffer,
     IdxType * s_neighborCount,
@@ -86,46 +82,21 @@ struct LargeStridePolicy {
     int leader = __ffs(neighborMask) - 1;
     int nNeighbors = __popc(neighborMask);
     int oldNeighborCount;
-    if (laneId() == leader) oldNeighborCount = atomicAdd(s_neighborCount, nNeighbors);
+    if (lane == leader) oldNeighborCount = atomicAdd(s_neighborCount, nNeighbors);
     oldNeighborCount = __shfl_sync(neighborMask, oldNeighborCount, leader);
     int h = oldNeighborCount + __popc(neighborMask & ((1u << lane) - 1));
+
+    bool shouldAppend = h < maxLength;
+    if (shouldAppend) s_neighborBuffer[h] = pointIdx;
 
     struct Result {
       bool wasAppended;
       bool maxLengthReached;
-    };
-    bool shouldAppend = h < maxLength;
-    if (shouldAppend) s_neighborBuffer[h] = pointIdx;
+    }; 
     return Result { shouldAppend, oldNeighborCount + nNeighbors >= maxLength };
   }
 };
 
-/*
-      } else {
-        unsigned int strideMask = ((1u << stride) - 1u) << (lane & ~(stride - 1));
-        unsigned int neighborMask = __ballot_sync(__activemask(), isNeighbor);
-        int leaderLane = __ffs(neighborMask & strideMask) - 1;
-        int nNeighbors = __popc(neighborMask & strideMask);
-        int oldNeighborCount = *s_neighborCount;
-        __syncwarp();
-        if (lane == leaderLane) *s_neighborCount += nNeighbors;
-        if (oldNeighborCount < coreThreshold && oldNeighborCount + nNeighbors >= coreThreshold && lane == leaderLane) {
-          clusters[currentPointIdx] = currentClusterId;
-          __threadfence();
-          pointStates[currentPointIdx] = stateCore;
-        }
-        int h = oldNeighborCount + __popc(neighborMask & strideMask & ((1u << lane) - 1));
-        if (h >= coreThreshold) {
-          markAsCandidate(pointIdx);
-        } else {
-          s_neighborBuffer[h] = pointIdx;
-        }
-      }
-
-*/
-
-// len(seedLists) must equal maxSeedLength * maxNumberOfThreadGroups
-// shared memory required: ( (coreThreshold + 127) / 128 * 128 + 1 ) * sizeof(IdxType)
 static __global__ void kernel_clusterExpansion(
   IdxType * clusters, unsigned int * pointStates,
   float const * xs, float const * ys, IdxType n,
@@ -227,7 +198,6 @@ static __global__ void kernel_clusterExpansion(
     {
       IdxType strideIdx = 0;
       for (; strideIdx < (n - 1) / stride; ++strideIdx) { processObject(strideIdx * stride + threadIdx.x); }
-
       if (threadIdx.x < n - strideIdx * stride) processObject(strideIdx * stride + threadIdx.x);
     }
 
