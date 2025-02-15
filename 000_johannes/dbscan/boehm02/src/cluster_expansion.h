@@ -54,7 +54,7 @@ constexpr unsigned int stateStateBitsMask   = 0xff000000;
 constexpr unsigned int stateThreadGroupIdxMask = 0x00ffffff;
 
 void findClusters(
-  unsigned int * d_pointStates, IdxType * d_clusters,
+  unsigned int ** d_pointStates, IdxType ** d_clusters,
   float * xs, float * ys, IdxType n,
   CollisionHandlingData collisionHandlingData,
   IdxType coreThreshold, float rsq

@@ -194,12 +194,9 @@ static auto runDbscan (
   unsigned int * d_pointStates;
   IdxType * d_clusters;
   CollisionHandlingData collisionHandlingData;
-  constexpr int nBlocks = 6;
-
-  allocateDeviceMemory(&d_pointStates, &d_clusters, &collisionHandlingData, nBlocks, nDataPoints);
 
   findClusters(
-    d_pointStates, d_clusters, points.d_x, points.d_y, points.n, collisionHandlingData, coreThreshold, r * r
+    &d_pointStates, &d_clusters, points.d_x, points.d_y, points.n, collisionHandlingData, coreThreshold, r * r
   );
   unionizeGpu(d_clusters, points.n);
 
