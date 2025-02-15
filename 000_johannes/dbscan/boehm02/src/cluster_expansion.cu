@@ -70,72 +70,59 @@ static __device__ __forceinline__ unsigned int laneId() {
   return ret;
 }
 
-struct SmallStridePolicy {
-  static __device__ auto tryAppendToNeighborBuffer(
-    IdxType * s_neighborBuffer,
-    IdxType * s_neighborCount,
-    IdxType maxLength,
-    IdxType pointIdx,
-    bool isNeighbor
-  ) {
-    int lane = laneId(); // or threadIdx.x & 0x1f
-    unsigned int stride = blockDim.x;
-    unsigned int leader = lane & ~(stride - 1);
-    unsigned int strideMask = ((1u << stride) - 1u) << leader;
-    unsigned int neighborMask = __ballot_sync(__activemask(), isNeighbor);
-    int nNeighbors = __popc(neighborMask & strideMask);
-    int oldNeighborCount;
-    if (lane == leader) oldNeighborCount = atomicAdd(s_neighborCount, nNeighbors);
-    oldNeighborCount = __shfl_sync(__activemask(), oldNeighborCount, 0, stride);
-    int h = oldNeighborCount + __popc(neighborMask & strideMask & ((1u << lane) - 1));
-
-    bool shouldAppend = isNeighbor && h < maxLength;
-    if (shouldAppend) s_neighborBuffer[h] = pointIdx;
-
-    bool allDefinitelyCore = __all_sync(__activemask(), oldNeighborCount + nNeighbors >= maxLength);
-    struct Result {
-      bool wasAppended;
-      bool allDefinitelyCore;
-    };
-    return Result { shouldAppend, allDefinitelyCore };
-  }
-};
-
 struct LargeStridePolicy {
+  // returns:
+  //   1 if append was possible and item was not last element
+  //   -1 if append was possible and item was last element
+  //   0 if append was not possible
   static __device__ auto tryAppendToNeighborBuffer(
     IdxType * s_neighborBuffer,
     IdxType * s_neighborCount,
     IdxType maxLength,
-    IdxType pointIdx,
-    bool isNeighbor
+    IdxType pointIdx
   ) {
     int lane = laneId(); // or threadIdx.x & 0x1f
-    unsigned int neighborMask = __ballot_sync(__activemask(), isNeighbor);
-    bool shouldAppend, allDefinitelyCore;
-
-    if (neighborMask) {
-      int leader = 0;
-      int nNeighbors = __popc(neighborMask);
-      int oldNeighborCount;
-      if (lane == leader) oldNeighborCount = atomicAdd(s_neighborCount, nNeighbors);
-      oldNeighborCount = __shfl_sync(__activemask(), oldNeighborCount, leader);
-      int h = oldNeighborCount + __popc(neighborMask & ((1u << lane) - 1));
-
-      shouldAppend = isNeighbor && h < maxLength;
-      if (shouldAppend) s_neighborBuffer[h] = pointIdx;
-      allDefinitelyCore = oldNeighborCount + nNeighbors >= maxLength;
-    } else {
-      shouldAppend = false; allDefinitelyCore = false;
-    }
+    unsigned int neighborMask = __ballot_sync(__activemask(), 1);
+    int leader = __ffs(neighborMask) - 1;
+    int nNeighbors = __popc(neighborMask);
+    int oldNeighborCount;
+    if (laneId() == leader) oldNeighborCount = atomicAdd(s_neighborCount, nNeighbors);
+    oldNeighborCount = __shfl_sync(neighborMask, oldNeighborCount, leader);
+    int h = oldNeighborCount + __popc(neighborMask & ((1u << lane) - 1));
 
     struct Result {
       bool wasAppended;
-      bool allDefinitelyCore;
+      bool maxLengthReached;
     };
-    return Result { shouldAppend, allDefinitelyCore };
+    bool shouldAppend = h < maxLength;
+    if (shouldAppend) s_neighborBuffer[h] = pointIdx;
+    return Result { shouldAppend, oldNeighborCount + nNeighbors >= maxLength };
   }
 };
 
+/*
+      } else {
+        unsigned int strideMask = ((1u << stride) - 1u) << (lane & ~(stride - 1));
+        unsigned int neighborMask = __ballot_sync(__activemask(), isNeighbor);
+        int leaderLane = __ffs(neighborMask & strideMask) - 1;
+        int nNeighbors = __popc(neighborMask & strideMask);
+        int oldNeighborCount = *s_neighborCount;
+        __syncwarp();
+        if (lane == leaderLane) *s_neighborCount += nNeighbors;
+        if (oldNeighborCount < coreThreshold && oldNeighborCount + nNeighbors >= coreThreshold && lane == leaderLane) {
+          clusters[currentPointIdx] = currentClusterId;
+          __threadfence();
+          pointStates[currentPointIdx] = stateCore;
+        }
+        int h = oldNeighborCount + __popc(neighborMask & strideMask & ((1u << lane) - 1));
+        if (h >= coreThreshold) {
+          markAsCandidate(pointIdx);
+        } else {
+          s_neighborBuffer[h] = pointIdx;
+        }
+      }
+
+*/
 
 // len(seedLists) must equal maxSeedLength * maxNumberOfThreadGroups
 // shared memory required: ( (coreThreshold + 127) / 128 * 128 + 1 ) * sizeof(IdxType)
@@ -219,21 +206,22 @@ static __global__ void kernel_clusterExpansion(
 
   {
     float x = xs[currentPointIdx], y = ys[currentPointIdx];
-    bool allDefinitelyCore = false; // must always be the same for each thread in a warp
+    bool isDefinitelyCore = false;
 
     auto processObject = [&] (IdxType pointIdx) {
       int lane = threadIdx.x % 32;
       float dx = xs[pointIdx] - x;
       float dy = ys[pointIdx] - y;
       bool isNeighbor = dx * dx + dy * dy <= rsq;
-
-      bool handleImmediately = isNeighbor && allDefinitelyCore;
-      if (!allDefinitelyCore) {
-        auto r = SmallStridePolicy::tryAppendToNeighborBuffer(s_neighborBuffer, s_neighborCount, coreThreshold, pointIdx, isNeighbor);
-        handleImmediately = isNeighbor && !r.wasAppended;
-        allDefinitelyCore = r.allDefinitelyCore;
+      if (isNeighbor) {
+        bool handleImmediately = isDefinitelyCore;
+        if (!handleImmediately) {
+          auto r = LargeStridePolicy::tryAppendToNeighborBuffer(s_neighborBuffer, s_neighborCount, coreThreshold, pointIdx);
+          handleImmediately = !r.wasAppended;
+          isDefinitelyCore = r.maxLengthReached;
+        }
+        if (handleImmediately) markAsCandidate(pointIdx);
       }
-      if (handleImmediately) markAsCandidate(pointIdx);
     };
 
     {
