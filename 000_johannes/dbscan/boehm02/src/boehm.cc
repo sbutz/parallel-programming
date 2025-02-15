@@ -151,15 +151,9 @@ void jsonPrintIdxTypeAry(IdxType * ary, size_t n) {
 }
 
 
-void jsonPrintStateAry(IdxType * ary, size_t n) {
-  auto verbalizeState = [](unsigned int state) {
-    std::string s = {};
-    if (state & stateUnderInspection) s += "[under inspection]";
-    if (state & stateNoiseOrBorder) s += "[noise or border]";
-    if (state & stateCore) s += "[core]";
-    if (state & stateReserved) s += "[reserved]";
-    if (state & stateReserved2) s += "[reserved2]";
-    return s;
+void jsonPrintStateAry(signed char * ary, size_t n) {
+  auto verbalizeState = [](signed char coreMarker) {
+    return coreMarker ? "[core]" : "[noise or border]";
   };
 	printf("[ ");
 	if (n > 0) {
@@ -191,17 +185,17 @@ static auto runDbscan (
 
   auto points = copyPointsToDevice(h_x, h_y, nDataPoints);
 
-  unsigned int * d_pointStates;
+  bool * d_coreMarkers;
   IdxType * d_clusters;
   CollisionHandlingData collisionHandlingData;
 
   findClusters(
-    &d_pointStates, &d_clusters, points.d_x, points.d_y, points.n, collisionHandlingData, coreThreshold, r * r
+    &d_coreMarkers, &d_clusters, points.d_x, points.d_y, points.n, collisionHandlingData, coreThreshold, r * r
   );
   unionizeGpu(d_clusters, points.n);
 
-  std::vector<unsigned int> states(points.n);
-  CUDA_CHECK(cudaMemcpy(states.data(), d_pointStates, points.n * sizeof(unsigned int), cudaMemcpyDeviceToHost))
+  std::vector<signed char> coreMarkers(points.n); // avoid vector<bool>
+  CUDA_CHECK(cudaMemcpy(coreMarkers.data(), d_coreMarkers, points.n * sizeof(bool), cudaMemcpyDeviceToHost))
 
   std::vector<IdxType> clusters(points.n);
   CUDA_CHECK(cudaMemcpy(clusters.data(), d_clusters, points.n * sizeof(IdxType), cudaMemcpyDeviceToHost))
@@ -214,10 +208,10 @@ static auto runDbscan (
   
   struct Result {
 //    DNeighborGraph g1;
-    std::vector<unsigned int> states;
+    std::vector<signed char> coreMarkers;
     std::vector<IdxType> clusters;
   };
-  return Result { std::move(states), std::move(clusters) };
+  return Result { std::move(coreMarkers), std::move(clusters) };
 }
 
 int main (int argc, char * argv []) {
@@ -257,7 +251,7 @@ int main (int argc, char * argv []) {
     std::cout << "\"output\": {\n";
       std::cout << "\"x\": "; jsonPrintFloatAry(a.data(), a.size()); std::cout << ",\n";
       std::cout << "\"y\": "; jsonPrintFloatAry(b.data(), b.size()); std::cout << ",\n";
-      std::cout << "\"state\": "; jsonPrintStateAry(res.states.data(), res.states.size()); std::cout << ",\n";
+      std::cout << "\"state\": "; jsonPrintStateAry(res.coreMarkers.data(), res.coreMarkers.size()); std::cout << ",\n";
       std::cout << "\"cluster_id\": "; jsonPrintIdxTypeAry(res.clusters.data(), res.clusters.size()); std::cout << "\n";
     std::cout << "},\n";
     std::cout << "\"profile\": {\n";

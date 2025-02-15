@@ -98,7 +98,7 @@ struct LargeStridePolicy {
 };
 
 static __global__ void kernel_clusterExpansion(
-  IdxType * clusters, unsigned int * pointStates,
+  IdxType * clusters, bool * coreMarkers,
   float const * xs, float const * ys, IdxType n,
   IdxType beginCurrentlyProcessedIdx,
   CollisionHandlingData collisionHandlingData,
@@ -159,8 +159,7 @@ static __global__ void kernel_clusterExpansion(
 
   auto markAsCandidate = [&] (IdxType pointIdx) {
     if (pointIdx < beginCurrentlyProcessedIdx) {
-      unsigned int state = pointStates[pointIdx];
-      if (state == stateCore) {
+      if (coreMarkers[pointIdx]) {
         currentClusterId = unionizeClusters(clusters, currentClusterId, pointIdx);
         *s_groupClusterId = currentClusterId;
       } else {
@@ -209,10 +208,8 @@ static __global__ void kernel_clusterExpansion(
       }
       if (threadIdx.x == 0) {
         clusters[currentPointIdx] = currentClusterId;
-        pointStates[currentPointIdx] = stateCore;
+        coreMarkers[currentPointIdx] = true;
       }
-    } else {
-      if (threadIdx.x == 0) pointStates[currentPointIdx] = stateNoiseOrBorder;
     }
   }
 
@@ -239,14 +236,14 @@ static __global__ void kernel_clusterExpansion(
         if (collision) {
           if (*s_neighborCount >= coreThreshold) {
             // we are core
-            if (pointStates[otherIdx] == stateCore) {
+            if (coreMarkers[otherIdx]) {
               unionizeClusters(clusters, *s_groupClusterId, otherIdx);
             } else {
               clusters[otherIdx] = *s_groupClusterId;
             }
           } else {
             // we are noise
-            if (pointStates[otherIdx] == stateCore) {
+            if (coreMarkers[otherIdx]) {
               clusters[currentPointIdx] = clusters[otherIdx];
             }
           }
@@ -257,14 +254,14 @@ static __global__ void kernel_clusterExpansion(
 }
 
 void allocateDeviceMemory(
-  unsigned int ** d_pointStates, IdxType ** d_clusters,
+  bool ** d_coreMarkers, IdxType ** d_clusters,
   CollisionHandlingData * collisionHandlingData,
   int nBlocks,
   IdxType n
 ) {
-  CUDA_CHECK(cudaMalloc(d_pointStates, n * sizeof(unsigned int)))
+  CUDA_CHECK(cudaMalloc(d_coreMarkers, n * sizeof(bool)))
   // TODO: Change later
-  CUDA_CHECK(cudaMemset(*d_pointStates, 0, n * sizeof(unsigned int)))
+  CUDA_CHECK(cudaMemset(*d_coreMarkers, 0, n * sizeof(bool)))
   CUDA_CHECK(cudaMalloc(d_clusters, n * sizeof(IdxType)))
   // TODO: Change later
   CUDA_CHECK(cudaMemset(*d_clusters, 0, n * sizeof(IdxType)))
@@ -280,7 +277,7 @@ void allocateDeviceMemory(
 }
 
 void findClusters(
-  unsigned int ** d_pointStates, IdxType ** d_clusters,
+  bool ** d_coreMarkers, IdxType ** d_clusters,
   float * xs, float * ys, IdxType n,
   CollisionHandlingData collisionHandlingData,
   IdxType coreThreshold, float rsq
@@ -297,13 +294,13 @@ void findClusters(
   unsigned int sharedBytesPerBlock = nThreadGroupsPerBlock * ((nThreadGroupsTotal + 3) / 4 + coreThreshold + 2) * 4;
   std::cerr << sharedBytesPerBlock << "\n";
 
-  allocateDeviceMemory(d_pointStates, d_clusters, &collisionHandlingData, nThreadGroupsTotal, n);
+  allocateDeviceMemory(d_coreMarkers, d_clusters, &collisionHandlingData, nThreadGroupsTotal, n);
 
   IdxType startPos = 0;
   for (;;) {
     CUDA_CHECK(cudaMemset((void *)collisionHandlingData.d_doneWithIdx, 0, nThreadGroupsTotal * sizeof(IdxType)))
     kernel_clusterExpansion <<<dim3(1, nBlocks), dim3(nThreadsPerBlock / nThreadGroupsPerBlock, nThreadGroupsPerBlock), sharedBytesPerBlock >>> (
-      *d_clusters, *d_pointStates, xs, ys, n, startPos, collisionHandlingData, coreThreshold, rsq
+      *d_clusters, *d_coreMarkers, xs, ys, n, startPos, collisionHandlingData, coreThreshold, rsq
     );
     CUDA_CHECK(cudaGetLastError())
     CUDA_CHECK(cudaDeviceSynchronize())
