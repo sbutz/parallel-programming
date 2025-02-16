@@ -22,6 +22,9 @@ static __device__ IdxType unionizeClusters2(
 ) {
   IdxType child, parentOffset, top2, top1;
 
+  // the following seems to save some time
+  if (cluster1 == cluster2) return cluster1;
+
   top1 = cluster1; // we assume cluster1 is the top node
   child = cluster2;
   for (;;) {
@@ -187,7 +190,6 @@ static __global__ void kernel_clusterExpansion(
     if (pointIdx < beginCurrentlyProcessedIdx) {
       if (coreMarkers[pointIdx]) {
         currentClusterId = unionizeClusters2(clusters, pointIdx + clusters[pointIdx], currentClusterId);
-        //currentClusterId = unionizeClusters(clusters, currentClusterId, pointIdx);
         *s_groupClusterId = currentClusterId;
       } else {
         // TODO: simple write should be sufficient
@@ -205,10 +207,11 @@ static __global__ void kernel_clusterExpansion(
     float x = xs[currentPointIdx], y = ys[currentPointIdx];
     bool isDefinitelyCore = false;
 
-    auto processObject = [&] (IdxType pointIdx) {
+    auto processObject = [&] (IdxType pointIdx, unsigned int mask) {
       int lane = threadIdx.x % 32;
       float dx = xs[pointIdx] - x;
       float dy = ys[pointIdx] - y;
+      unsigned int oldClusterId = currentClusterId;
       bool isNeighbor = dx * dx + dy * dy <= rsq;
       if (isNeighbor) {
         bool handleImmediately = isDefinitelyCore;
@@ -219,13 +222,41 @@ static __global__ void kernel_clusterExpansion(
         }
         if (handleImmediately) markAsCandidate(pointIdx);
       }
+      /*
+      //unsigned int clusterIdChangedMask = __ballot_sync(mask, currentClusterId != oldClusterId);
+      //if (clusterIdChangedMask) {
+      //  int leader = __ffs(clusterIdChangedMask) - 1;
+      //  currentClusterId = __shfl_sync(mask, currentClusterId, leader);
+      //}
+      
+      unsigned int clusterIdChanged = __any_sync(mask, currentClusterId != oldClusterId);
+      if (clusterIdChanged) {
+        for (unsigned int i = 1; i != 32; i <<= 1) {
+          unsigned int otherId = currentClusterId;
+          otherId = __shfl_down_sync(mask, otherId, i);
+          if (otherId < currentClusterId) currentClusterId = otherId;
+        }
+        currentClusterId = __shfl_sync(mask, currentClusterId, 0);
+      }
+      */
     };
 
     {
       IdxType strideIdx = 0;
-      for (; strideIdx < (n - 1) / stride; ++strideIdx) { processObject(strideIdx * stride + threadIdx.x); }
-      if (threadIdx.x < n - strideIdx * stride) processObject(strideIdx * stride + threadIdx.x);
+      for (; strideIdx < (n - 1) / stride; ++strideIdx) { processObject(strideIdx * stride + threadIdx.x, 0xffffffff); }
+      unsigned int remaining = n - strideIdx * stride;
+      if (threadIdx.x < remaining) {
+        unsigned int remainingFromWarpStart = remaining - (threadIdx.x & ~0x1fu);
+        unsigned int mask = remainingFromWarpStart >= 32 ? 0xffffffff : (1u << remainingFromWarpStart) - 1u;
+        processObject(strideIdx * stride + threadIdx.x, mask);
+      }
     }
+
+    for (unsigned int i = 1; i < 32; i <<= 1) {
+      unsigned int otherClusterId = __shfl_down_sync(0xffffffff, currentClusterId, i);
+      if (!(laneId() & ((i << 1) - 1))) currentClusterId = unionizeClusters2(clusters, currentClusterId, otherClusterId);
+    }
+    currentClusterId = __shfl_sync(0xffffffff, currentClusterId, 0);
 
     __syncthreads();
 
