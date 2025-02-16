@@ -15,6 +15,35 @@ DPoints copyPointsToDevice(float const * x, float const * y, IdxType n) {
   return { n, d_x, d_y };
 }
 
+static __device__ IdxType unionizeClusters2(
+  IdxType * clusters,
+  IdxType cluster1,
+  IdxType cluster2
+) {
+  IdxType child, parent, top2, top1;
+
+  top1 = cluster1; // we assume cluster1 is the top node
+  child = cluster2;
+  for (;;) {
+    parent = clusters[child - 1];
+    while (child != parent) {
+      child = parent;
+      parent = clusters[child - 1];
+    }
+    top2 = child;
+
+    if (top1 == top2) break; // necessary?
+    if (top1 > top2) { IdxType tmp = top2; top2 = top1; top1 = tmp; }
+
+    IdxType old = atomicCAS(&clusters[top2 - 1], top2, top1);
+    if (old == top2) break;
+    child = top2;
+  }
+  return top1;
+}
+
+
+
 static __device__ IdxType unionizeClusters(
   IdxType * clusters,
   IdxType currentClusterId,
@@ -160,7 +189,12 @@ static __global__ void kernel_clusterExpansion(
   auto markAsCandidate = [&] (IdxType pointIdx) {
     if (pointIdx < beginCurrentlyProcessedIdx) {
       if (coreMarkers[pointIdx]) {
-        currentClusterId = unionizeClusters(clusters, currentClusterId, pointIdx);
+        if (currentClusterId == 0) {
+          currentClusterId = clusters[pointIdx];
+        } else {
+          currentClusterId = unionizeClusters2(clusters, clusters[pointIdx], currentClusterId);
+        }
+        //currentClusterId = unionizeClusters(clusters, currentClusterId, pointIdx);
         *s_groupClusterId = currentClusterId;
       } else {
         // TODO: simple write should be sufficient
@@ -209,6 +243,19 @@ static __global__ void kernel_clusterExpansion(
       if (threadIdx.x == 0) {
         clusters[currentPointIdx] = currentClusterId;
         coreMarkers[currentPointIdx] = true;
+      }
+    } else {
+      int cnt = *s_neighborCount;
+      for (int i = threadIdx.x; i < cnt; i += stride) {
+        IdxType neighbor = s_neighborBuffer[i];
+        if (coreMarkers[neighbor]) {
+          if (neighbor < beginCurrentlyProcessedIdx) {
+            clusters[currentPointIdx] = clusters[neighbor];
+          } else if (neighbor < endCurrentlyProcessedIdx) {
+            s_collisions[neighbor - beginCurrentlyProcessedIdx] = true;
+          }
+          break;
+        }
       }
     }
   }
