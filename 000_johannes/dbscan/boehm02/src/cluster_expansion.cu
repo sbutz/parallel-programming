@@ -20,7 +20,7 @@ static __device__ IdxType unionizeClusters2(
   IdxType cluster1,
   IdxType cluster2
 ) {
-  IdxType child, parentOffset, top2, top1;
+  IdxType grandchild, child, parentOffset, top2, top1;
 
   // the following seems to save some time
   if (cluster1 == cluster2) return cluster1;
@@ -29,9 +29,16 @@ static __device__ IdxType unionizeClusters2(
   child = cluster2;
   for (;;) {
     parentOffset = clusters[child];
-    while (parentOffset) {
+    if (parentOffset) {
+      grandchild = child;
       child += parentOffset;
       parentOffset = clusters[child];
+      while (parentOffset) {
+        (void)atomicCAS(&clusters[grandchild], child - grandchild, child + parentOffset - grandchild);
+        grandchild = child;
+        child += parentOffset;
+        parentOffset = clusters[child];
+      }
     }
     top2 = child;
 
