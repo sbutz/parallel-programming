@@ -199,7 +199,7 @@ static auto runDbscan (
 
   std::vector<IdxType> clusters(points.n);
   CUDA_CHECK(cudaMemcpy(clusters.data(), d_clusters, points.n * sizeof(IdxType), cudaMemcpyDeviceToHost))
-  for (size_t i = 0; i < clusters.size(); ++i) if (coreMarkers[i] || clusters[i]) clusters[i] += i;
+  for (size_t i = 0; i < clusters.size(); ++i) if (coreMarkers[i] || clusters[i]) clusters[i] += i + 1;
 
 	CUDA_CHECK(cudaEventRecord(stop));
   CUDA_CHECK(cudaEventSynchronize(stop));

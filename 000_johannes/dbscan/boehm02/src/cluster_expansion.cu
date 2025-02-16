@@ -25,7 +25,7 @@ static __device__ IdxType unionizeClusters2(
   // the following seems to save some time
   if (cluster1 == cluster2) return cluster1;
 
-  top1 = cluster1; // we assume cluster1 is the top node
+  top1 = cluster1; // we initially assume cluster1 is the top node
   child = cluster2;
   for (;;) {
     parentOffset = clusters[child];
@@ -53,6 +53,12 @@ static __device__ IdxType unionizeClusters2(
 }
 
 
+static __device__ __forceinline__ IdxType runToTop(IdxType * clusters, IdxType clusterId) {
+  IdxType child = clusterId;
+  IdxType parentOffset = clusters[child];
+  while (parentOffset) { child += parentOffset; parentOffset = clusters[child]; }
+  return child;
+}
 
 static __device__ IdxType unionizeClusters(
   IdxType * clusters,
@@ -199,14 +205,12 @@ static __global__ void kernel_clusterExpansion(
         currentClusterId = unionizeClusters2(clusters, pointIdx + clusters[pointIdx], currentClusterId);
         *s_groupClusterId = currentClusterId;
       } else {
-        // TODO: simple write should be sufficient
-        (void)atomicCAS(&clusters[pointIdx], 0, currentClusterId - pointIdx);
+        clusters[pointIdx] = currentClusterId - pointIdx;
       }
     } else if (pointIdx < endCurrentlyProcessedIdx) {
       s_collisions[pointIdx - beginCurrentlyProcessedIdx] = true;
     } else {
-      // TODO: simple write should be sufficient
-      (void)atomicCAS(&clusters[pointIdx], 0, currentClusterId - pointIdx);
+      clusters[pointIdx] = currentClusterId - pointIdx;
     }
   };  
 
@@ -258,19 +262,28 @@ static __global__ void kernel_clusterExpansion(
         processObject(strideIdx * stride + threadIdx.x, mask);
       }
     }
-
-    for (unsigned int i = 1; i < 32; i <<= 1) {
-      unsigned int otherClusterId = __shfl_down_sync(0xffffffff, currentClusterId, i);
-      if (!(laneId() & ((i << 1) - 1))) currentClusterId = unionizeClusters2(clusters, currentClusterId, otherClusterId);
-    }
-    currentClusterId = __shfl_sync(0xffffffff, currentClusterId, 0);
-
+    
     __syncthreads();
 
     if (*s_neighborCount >= coreThreshold) {
       for (int i = threadIdx.x; i < coreThreshold; i += stride) {
         markAsCandidate(s_neighborBuffer[i]);
       }
+    }
+
+    //seems to make no difference
+    //currentClusterId = runToTop(clusters, currentClusterId);
+    for (unsigned int i = 1; i < 32; i <<= 1) {
+      unsigned int otherClusterId = __shfl_down_sync(0xffffffff, currentClusterId, i);
+      if (!(laneId() & ((i << 1) - 1))) currentClusterId = unionizeClusters2(clusters, currentClusterId, otherClusterId);
+    }
+    currentClusterId = __shfl_sync(0xffffffff, currentClusterId, 0);
+
+    // TODO: unionize warps within a thread group
+
+    __syncthreads();
+
+    if (*s_neighborCount >= coreThreshold) {
       if (threadIdx.x == 0) {
         clusters[currentPointIdx] = currentClusterId - currentPointIdx;
         coreMarkers[currentPointIdx] = true;
@@ -290,7 +303,9 @@ static __global__ void kernel_clusterExpansion(
       }
     }
   }
-return;
+
+
+  return;
   __syncthreads();
 
   // copy our collisions to global memory
