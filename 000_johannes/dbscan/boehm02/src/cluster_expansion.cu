@@ -20,23 +20,23 @@ static __device__ IdxType unionizeClusters2(
   IdxType cluster1,
   IdxType cluster2
 ) {
-  IdxType child, parent, top2, top1;
+  IdxType child, parentOffset, top2, top1;
 
   top1 = cluster1; // we assume cluster1 is the top node
   child = cluster2;
   for (;;) {
-    parent = clusters[child - 1];
-    while (child != parent) {
-      child = parent;
-      parent = clusters[child - 1];
+    parentOffset = clusters[child];
+    while (parentOffset) {
+      child += parentOffset;
+      parentOffset = clusters[child];
     }
     top2 = child;
 
     if (top1 == top2) break; // necessary?
     if (top1 > top2) { IdxType tmp = top2; top2 = top1; top1 = tmp; }
 
-    IdxType old = atomicCAS(&clusters[top2 - 1], top2, top1);
-    if (old == top2) break;
+    IdxType old = atomicCAS(&clusters[top2], 0, top1 - top2);
+    if (!old) break;
     child = top2;
   }
   return top1;
@@ -174,13 +174,10 @@ static __global__ void kernel_clusterExpansion(
   // clear s_neighborCount
   if (threadIdx.x == 0) *s_neighborCount = 0;
 
-  __syncthreads();
-
   if (threadGroupIdx >= n - beginCurrentlyProcessedIdx) return;
 
   IdxType currentPointIdx = beginCurrentlyProcessedIdx + threadGroupIdx;
-  IdxType currentClusterId = clusters[currentPointIdx];
-  if (currentClusterId == 0) currentClusterId = currentPointIdx + 1;
+  IdxType currentClusterId = currentPointIdx + clusters[currentPointIdx];
 
   if (threadIdx.x == 0) *s_groupClusterId = currentClusterId;
 
@@ -189,22 +186,18 @@ static __global__ void kernel_clusterExpansion(
   auto markAsCandidate = [&] (IdxType pointIdx) {
     if (pointIdx < beginCurrentlyProcessedIdx) {
       if (coreMarkers[pointIdx]) {
-        if (currentClusterId == 0) {
-          currentClusterId = clusters[pointIdx];
-        } else {
-          currentClusterId = unionizeClusters2(clusters, clusters[pointIdx], currentClusterId);
-        }
+        currentClusterId = unionizeClusters2(clusters, pointIdx + clusters[pointIdx], currentClusterId);
         //currentClusterId = unionizeClusters(clusters, currentClusterId, pointIdx);
         *s_groupClusterId = currentClusterId;
       } else {
         // TODO: simple write should be sufficient
-        (void)atomicCAS(&clusters[pointIdx], 0, currentClusterId);
+        (void)atomicCAS(&clusters[pointIdx], 0, currentClusterId - pointIdx);
       }
     } else if (pointIdx < endCurrentlyProcessedIdx) {
       s_collisions[pointIdx - beginCurrentlyProcessedIdx] = true;
     } else {
       // TODO: simple write should be sufficient
-      (void)atomicCAS(&clusters[pointIdx], 0, currentClusterId);
+      (void)atomicCAS(&clusters[pointIdx], 0, currentClusterId - pointIdx);
     }
   };  
 
@@ -241,7 +234,7 @@ static __global__ void kernel_clusterExpansion(
         markAsCandidate(s_neighborBuffer[i]);
       }
       if (threadIdx.x == 0) {
-        clusters[currentPointIdx] = currentClusterId;
+        clusters[currentPointIdx] = currentClusterId - currentPointIdx;
         coreMarkers[currentPointIdx] = true;
       }
     } else {
@@ -250,7 +243,7 @@ static __global__ void kernel_clusterExpansion(
         IdxType neighbor = s_neighborBuffer[i];
         if (coreMarkers[neighbor]) {
           if (neighbor < beginCurrentlyProcessedIdx) {
-            clusters[currentPointIdx] = clusters[neighbor];
+            clusters[currentPointIdx] = neighbor + clusters[neighbor] - currentPointIdx;
           } else if (neighbor < endCurrentlyProcessedIdx) {
             s_collisions[neighbor - beginCurrentlyProcessedIdx] = true;
           }
@@ -259,7 +252,7 @@ static __global__ void kernel_clusterExpansion(
       }
     }
   }
-
+return;
   __syncthreads();
 
   // copy our collisions to global memory
@@ -284,14 +277,14 @@ static __global__ void kernel_clusterExpansion(
           if (*s_neighborCount >= coreThreshold) {
             // we are core
             if (coreMarkers[otherIdx]) {
-              unionizeClusters(clusters, *s_groupClusterId, otherIdx);
+              //unionizeClusters2(clusters, *s_groupClusterId, otherIdx);
             } else {
-              clusters[otherIdx] = *s_groupClusterId;
+              clusters[otherIdx] = *s_groupClusterId - otherIdx;
             }
           } else {
             // we are noise
             if (coreMarkers[otherIdx]) {
-              clusters[currentPointIdx] = clusters[otherIdx];
+              clusters[currentPointIdx] = otherIdx + clusters[otherIdx] - currentPointIdx;
             }
           }
         }
@@ -361,17 +354,17 @@ void unionizeCpu(std::vector<IdxType> & clusters) {
   std::vector<IdxType> stack;
   for (IdxType i = 0; i < clusters.size(); ++i) {
     IdxType child = i + 1;
-    IdxType parent = clusters[child - 1];
+    IdxType parent = child + clusters[child - 1] + 1;
     if (parent == 0 || parent == child) continue; // noise
     do {
       stack.push_back(child);
       child = parent;
-      parent = clusters[child - 1];
+      parent = child + clusters[child - 1] + 1;
     } while (parent != child);
     IdxType top = child;
     while (stack.size() > 0) {
       IdxType current = stack.back(); stack.pop_back();
-      clusters[current - 1] = top;
+      clusters[current - 1] = top - current;
     }
   }
 }
@@ -385,20 +378,20 @@ static __global__ void kernel_unionize(IdxType * clusters, IdxType n) {
   auto doWork = [&] {
     IdxType idx = strideBegin + tid;
     IdxType cl = idx + 1;
-    IdxType p = clusters[idx];
+    IdxType p = idx + clusters[idx] + 1;
     if (p != 0 && p != cl) {
       for (;;) {
         cl = p;
-        p = clusters[cl - 1];
+        p = cl + clusters[cl - 1] + 1;
         if (p == cl) break;
       }
       IdxType top = cl;
       cl = idx + 1;
       for (;;) {
         //p = atomicExch(&clusters[cl - 1], top);
-        p = clusters[cl - 1];
+        p = cl + clusters[cl - 1] + 1;
         if (p == top) break;
-        clusters[cl - 1] = top;
+        clusters[cl - 1] = top - cl;
       }
     }
   };

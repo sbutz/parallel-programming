@@ -192,13 +192,14 @@ static auto runDbscan (
   findClusters(
     &d_coreMarkers, &d_clusters, points.d_x, points.d_y, points.n, collisionHandlingData, coreThreshold, r * r
   );
-  unionizeGpu(d_clusters, points.n);
+//  unionizeGpu(d_clusters, points.n);
 
   std::vector<signed char> coreMarkers(points.n); // avoid vector<bool>
   CUDA_CHECK(cudaMemcpy(coreMarkers.data(), d_coreMarkers, points.n * sizeof(bool), cudaMemcpyDeviceToHost))
 
   std::vector<IdxType> clusters(points.n);
   CUDA_CHECK(cudaMemcpy(clusters.data(), d_clusters, points.n * sizeof(IdxType), cudaMemcpyDeviceToHost))
+  for (size_t i = 0; i < clusters.size(); ++i) if (coreMarkers[i] || clusters[i]) clusters[i] += i;
 
 	CUDA_CHECK(cudaEventRecord(stop));
   CUDA_CHECK(cudaEventSynchronize(stop));
