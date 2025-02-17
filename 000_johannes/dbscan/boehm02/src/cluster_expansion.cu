@@ -142,6 +142,10 @@ struct LargeStridePolicy {
   }
 };
 
+static constexpr __host__ __device__ __forceinline__ IdxType dhi_max(IdxType a, IdxType b) {
+  return a > b ? a : b;
+}
+
 static __global__ void kernel_clusterExpansion(
   IdxType * clusters, bool * coreMarkers,
   float const * xs, float const * ys, IdxType n,
@@ -149,7 +153,7 @@ static __global__ void kernel_clusterExpansion(
   CollisionHandlingData collisionHandlingData,
   IdxType coreThreshold, float rsq
 ) {
-  unsigned int stride = blockDim.x;
+  unsigned int stride = blockDim.x; // blockDim.x must be a multiple of 32
   unsigned int nThreadGroupsPerBlock = blockDim.y;
   unsigned int nBlocks = gridDim.y;
   unsigned int nThreadGroupsTotal = nBlocks * nThreadGroupsPerBlock;
@@ -162,6 +166,9 @@ static __global__ void kernel_clusterExpansion(
   //   size in bytes: (nThreadGroupsTotal + 3) / 4 * 4
   // s_neighborBuffer: IdxType[coreThreshold]
   //   size in bytes: coreThreshold * 4       TODO: Why not (coreThreshold - 1) * 4?
+  // -> simultaneously used for s_interWarpUnionize: IdxType[blockDim.x / 32]
+  //   size in bytes: (blockDim.x + 31) / 32 * 4
+  // => size in bytes: max(coreThreshold, (blockDim.x + 31) / 32)
   // s_neighborCount: IdxType
   //   size in bytes: 4
   // s_groupClusterId: IdxType
@@ -175,7 +182,8 @@ static __global__ void kernel_clusterExpansion(
   static_assert(alignof(IdxType) == 4, "");
   bool * s_collisions        = (bool *)    (sMem                              + sMemBytesPerThreadGroup * threadIdx.y);
   IdxType * s_neighborBuffer = (IdxType *) ((unsigned char *)s_collisions     + (nThreadGroupsTotal + 3) / 4 * 4);
-  IdxType * s_neighborCount  = (IdxType *) ((unsigned char *)s_neighborBuffer + coreThreshold * 4);
+  volatile IdxType * s_interWarpUnionize = s_neighborBuffer;
+  IdxType * s_neighborCount  = (IdxType *) ((unsigned char *)s_neighborBuffer + dhi_max(coreThreshold, (blockDim.x + 31) / 32) * 4);
   IdxType * s_groupClusterId = (IdxType *) ((unsigned char *)s_neighborCount  + 4);
 
   // clear s_collisions
@@ -202,7 +210,7 @@ static __global__ void kernel_clusterExpansion(
   auto markAsCandidate = [&] (IdxType pointIdx) {
     if (pointIdx < beginCurrentlyProcessedIdx) {
       if (coreMarkers[pointIdx]) {
-        currentClusterId = unionizeClusters2(clusters, pointIdx + clusters[pointIdx], currentClusterId);
+        currentClusterId = unionizeClusters2(clusters, pointIdx, currentClusterId);
         *s_groupClusterId = currentClusterId;
       } else {
         clusters[pointIdx] = currentClusterId - pointIdx;
@@ -274,12 +282,38 @@ static __global__ void kernel_clusterExpansion(
     //seems to make no difference
     //currentClusterId = runToTop(clusters, currentClusterId);
     for (unsigned int i = 1; i < 32; i <<= 1) {
-      unsigned int otherClusterId = __shfl_down_sync(0xffffffff, currentClusterId, i);
+      IdxType otherClusterId = __shfl_down_sync(0xffffffff, currentClusterId, i);
       if (!(laneId() & ((i << 1) - 1))) currentClusterId = unionizeClusters2(clusters, currentClusterId, otherClusterId);
     }
     currentClusterId = __shfl_sync(0xffffffff, currentClusterId, 0);
 
-    // TODO: unionize warps within a thread group
+    __syncthreads();
+
+    // unionize warps within every thread group
+    unsigned int nValuesToUnionize = (blockDim.x + 31) / 32;
+    if (nValuesToUnionize > 1) {
+      int lane = laneId();
+      int wid = threadIdx.x / 32;
+      if (lane == 0) s_interWarpUnionize[threadIdx.x / 32] = currentClusterId;
+      while ((wid + 1) * 32 <= nValuesToUnionize) {
+        __syncthreads();
+        IdxType myValue = threadIdx.x < nValuesToUnionize ? s_interWarpUnionize[threadIdx.x] : (IdxType)-1;
+        unsigned int limit = nValuesToUnionize - wid * 32;
+        if (limit > 32) limit = 32;
+        for (unsigned int i = 1; i < limit; i <<= 1) {
+          IdxType otherValue = __shfl_down_sync(0xffffffff, myValue, i);
+          if (
+            (otherValue + 1) &&
+            !(laneId() & ((i << 1) - 1))
+          ) myValue = unionizeClusters2(clusters, myValue, otherValue);
+        }
+        nValuesToUnionize = (nValuesToUnionize + 31) / 32;
+        if (laneId() == 0) s_interWarpUnionize[threadIdx.x / 32] == myValue;
+        if (nValuesToUnionize == 1) break;
+      }
+      __syncthreads();
+      currentClusterId = s_interWarpUnionize[0];
+    }
 
     __syncthreads();
 
@@ -304,8 +338,6 @@ static __global__ void kernel_clusterExpansion(
     }
   }
 
-
-  return;
   __syncthreads();
 
   // copy our collisions to global memory
@@ -330,7 +362,7 @@ static __global__ void kernel_clusterExpansion(
           if (*s_neighborCount >= coreThreshold) {
             // we are core
             if (coreMarkers[otherIdx]) {
-              //unionizeClusters2(clusters, *s_groupClusterId, otherIdx);
+              currentClusterId = unionizeClusters2(clusters, currentClusterId, otherIdx);
             } else {
               clusters[otherIdx] = *s_groupClusterId - otherIdx;
             }
@@ -430,21 +462,20 @@ static __global__ void kernel_unionize(IdxType * clusters, IdxType n) {
 
   auto doWork = [&] {
     IdxType idx = strideBegin + tid;
-    IdxType cl = idx + 1;
-    IdxType p = idx + clusters[idx] + 1;
-    if (p != 0 && p != cl) {
+    IdxType cl = idx;
+    IdxType pOffset = clusters[idx];
+    if (!pOffset) {
       for (;;) {
-        cl = p;
-        p = cl + clusters[cl - 1] + 1;
-        if (p == cl) break;
+        cl += pOffset;
+        pOffset = clusters[cl];
+        if (!pOffset) break;
       }
       IdxType top = cl;
-      cl = idx + 1;
+      cl = idx;
       for (;;) {
-        //p = atomicExch(&clusters[cl - 1], top);
-        p = cl + clusters[cl - 1] + 1;
-        if (p == top) break;
-        clusters[cl - 1] = top - cl;
+        pOffset = clusters[cl];
+        if (!pOffset) break;
+        clusters[cl] = top - cl;
       }
     }
   };
