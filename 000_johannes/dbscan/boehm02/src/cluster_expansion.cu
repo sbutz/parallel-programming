@@ -168,42 +168,46 @@ static __global__ void kernel_clusterExpansion(
   //   size in bytes: coreThreshold * 4       TODO: Why not (coreThreshold - 1) * 4?
   // -> simultaneously used for s_interWarpUnionize: IdxType[blockDim.x / 32]
   //   size in bytes: (blockDim.x + 31) / 32 * 4
-  // => size in bytes: max(coreThreshold, (blockDim.x + 31) / 32)
+  // => size in bytes: max(coreThreshold, (blockDim.x + 31) / 32) * 4
   // s_neighborCount: IdxType
   //   size in bytes: 4
-  // s_groupClusterId: IdxType
-  //   size in bytes: 4
-  // -> Total size per thread group:
-  //   [(nThreadGroupsTotal + 3) / 4 + coreThreshold + 2] * 4 bytes
-  extern __shared__ unsigned char sMem [];
-  unsigned int sMemBytesPerThreadGroup = 4 * ((nThreadGroupsTotal + 3) / 4 + coreThreshold + 2);
+  // -> Total size per thread group in bytes:
+  //   [(nThreadGroupsTotal + 3) / 4 + max(coreThreshold, (blockDim.x + 31) / 32) + 1] * 4 bytes
+  extern __shared__ char sMem [];
+  unsigned int sMemBytesPerThreadGroup = 4 * (
+    (nThreadGroupsTotal + 3) / 4 +
+    dhi_max(coreThreshold, (blockDim.x + 31) / 32) +
+    1
+  );
 
-  static_assert(sizeof(IdxType) == 4, "");
-  static_assert(alignof(IdxType) == 4, "");
-  bool * s_collisions        = (bool *)    (sMem                              + sMemBytesPerThreadGroup * threadIdx.y);
-  IdxType * s_neighborBuffer = (IdxType *) ((unsigned char *)s_collisions     + (nThreadGroupsTotal + 3) / 4 * 4);
+  static_assert(
+    sizeof(IdxType)  == 4 &&
+    alignof(IdxType) == 4 &&
+    sizeof(bool) == 1, ""
+  );
+  bool * s_collisions        = (bool *)    (sMem                     + sMemBytesPerThreadGroup * threadIdx.y);
+  IdxType * s_neighborBuffer = (IdxType *) ((char *)s_collisions     + (nThreadGroupsTotal + 3) / 4 * 4);
   volatile IdxType * s_interWarpUnionize = s_neighborBuffer;
-  IdxType * s_neighborCount  = (IdxType *) ((unsigned char *)s_neighborBuffer + dhi_max(coreThreshold, (blockDim.x + 31) / 32) * 4);
-  IdxType * s_groupClusterId = (IdxType *) ((unsigned char *)s_neighborCount  + 4);
+  IdxType * s_neighborCount  = (IdxType *) ((char *)s_neighborBuffer + dhi_max(coreThreshold, (blockDim.x + 31) / 32) * 4);
 
-  // clear s_collisions
+  // clear all shared memory
   {
+    // zeroing one byte per thread is faster than one unsigned int per thread
+    //   -- reason unclear, but may be related to memory bank conflicts
     IdxType strideStart = 0;
-    if (nThreadGroupsTotal > stride) for (; strideStart < nThreadGroupsTotal - stride; strideStart += stride) {
-      s_collisions[strideStart + threadIdx.x] = false;
+    IdxType myOffset = blockDim.x * threadIdx.y + threadIdx.x;
+    IdxType total = sMemBytesPerThreadGroup * blockDim.y;
+    while (total - strideStart > blockDim.x * blockDim.y) {
+      sMem [strideStart + myOffset] = 0;
+      strideStart += blockDim.x * blockDim.y;
     }
-    if (threadIdx.x < nThreadGroupsTotal - strideStart) s_collisions[strideStart + threadIdx.x] = false;
+    if (myOffset < total - strideStart) sMem [strideStart + myOffset] = 0;
   }
-
-  // clear s_neighborCount
-  if (threadIdx.x == 0) *s_neighborCount = 0;
 
   if (threadGroupIdx >= n - beginCurrentlyProcessedIdx) return;
 
   IdxType currentPointIdx = beginCurrentlyProcessedIdx + threadGroupIdx;
   IdxType currentClusterId = currentPointIdx + clusters[currentPointIdx];
-
-  if (threadIdx.x == 0) *s_groupClusterId = currentClusterId;
 
   __syncthreads();
 
@@ -211,7 +215,6 @@ static __global__ void kernel_clusterExpansion(
     if (pointIdx < beginCurrentlyProcessedIdx) {
       if (coreMarkers[pointIdx]) {
         currentClusterId = unionizeClusters2(clusters, pointIdx, currentClusterId);
-        *s_groupClusterId = currentClusterId;
       } else {
         clusters[pointIdx] = currentClusterId - pointIdx;
       }
@@ -220,7 +223,7 @@ static __global__ void kernel_clusterExpansion(
     } else {
       clusters[pointIdx] = currentClusterId - pointIdx;
     }
-  };  
+  };
 
   {
     float x = xs[currentPointIdx], y = ys[currentPointIdx];
@@ -364,7 +367,7 @@ static __global__ void kernel_clusterExpansion(
             if (coreMarkers[otherIdx]) {
               currentClusterId = unionizeClusters2(clusters, currentClusterId, otherIdx);
             } else {
-              clusters[otherIdx] = *s_groupClusterId - otherIdx;
+              clusters[otherIdx] = currentClusterId - otherIdx;
             }
           } else {
             // we are noise
@@ -416,7 +419,11 @@ void findClusters(
   //nThreadGroupsPerBlock = nThreadsPerBlock / dimy;
   int nThreadGroupsTotal = nBlocks * nThreadGroupsPerBlock;
 
-  unsigned int sharedBytesPerBlock = nThreadGroupsPerBlock * ((nThreadGroupsTotal + 3) / 4 + coreThreshold + 2) * 4;
+  unsigned int sharedBytesPerBlock = nThreadGroupsPerBlock * 4 * (
+    (nThreadGroupsTotal + 3) / 4 +
+    dhi_max(coreThreshold, (nThreadGroupsPerBlock + 31) / 32) +
+    1
+  );
   std::cerr << sharedBytesPerBlock << "\n";
 
   allocateDeviceMemory(d_coreMarkers, d_clusters, &collisionHandlingData, nThreadGroupsTotal, n);
