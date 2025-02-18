@@ -434,12 +434,12 @@ void findClusters(
     kernel_clusterExpansion <<<dim3(1, nBlocks), dim3(nThreadsPerBlock / nThreadGroupsPerBlock, nThreadGroupsPerBlock), sharedBytesPerBlock >>> (
       *d_clusters, *d_coreMarkers, xs, ys, n, startPos, collisionHandlingData, coreThreshold, rsq
     );
-    CUDA_CHECK(cudaGetLastError())
-    CUDA_CHECK(cudaDeviceSynchronize())
+    //CUDA_CHECK(cudaDeviceSynchronize())
 
     if (n - startPos <= nThreadGroupsTotal) break;
     startPos += nThreadGroupsTotal;
   }
+  CUDA_CHECK(cudaGetLastError())
 }
 
 void unionizeCpu(std::vector<IdxType> & clusters) {
