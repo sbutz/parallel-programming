@@ -140,7 +140,7 @@ static __device__ IdxType unionizeWithinThreadGroup(
   return myClusterId;
 }
 
-static __device__ IdxType handleCollisions(
+static __device__ void handleCollisions(
   CollisionHandlingData collisionHandlingData,
   bool * coreMarkers,
   IdxType * clusters,
@@ -162,41 +162,36 @@ static __device__ IdxType handleCollisions(
 
   __threadfence();
 
-  // First thread in every thread group annonces that thread group is done
+  // First thread in every thread group announces that thread group is done
   if (threadIdx.x == 0) collisionHandlingData.d_doneWithIdx[threadGroupIdx] = ourPointIdx;
 
   __threadfence();
 
   // make sure other blocks observe our changes
   // TODO: probably we can replace this by threadIdx.x == 0 && threadIdx.y == 0
-  if (threadIdx.x == 0) (void)atomicAdd(collisionHandlingData.d_mutex, 1);
+  if (threadIdx.x == 0 && threadIdx.y == 0) (void)atomicAdd(collisionHandlingData.d_mutex, 1);
 
   __threadfence();
 
   for (unsigned int i = threadIdx.x; i < nThreadGroupsTotal; i += stride) {
-    if (i != blockIdx.x) {
-      IdxType otherIdx = collisionHandlingData.d_doneWithIdx[i];
-      if (otherIdx) {
-        bool collision = s_ourCollisions[i] || collisionHandlingData.d_collisionMatrix[i * nThreadGroupsTotal + threadGroupIdx];
-        if (collision) {
-          if (ourPointIsCore) {
-            // we are core
-            if (coreMarkers[otherIdx]) {
-              ourClusterId = unionizeClusters2(clusters, ourClusterId, otherIdx);
-            } else {
-              clusters[otherIdx] = ourClusterId - otherIdx;
-            }
-          } else {
-            // we are noise
-            if (coreMarkers[otherIdx]) {
-              clusters[ourPointIdx] = otherIdx + clusters[otherIdx] - ourPointIdx;
-            }
-          }
-        }
+    if (i == blockIdx.x) continue;
+    IdxType otherIdx = collisionHandlingData.d_doneWithIdx[i];
+    if (!otherIdx) continue;
+
+    bool collision = s_ourCollisions[i] || collisionHandlingData.d_collisionMatrix[i * nThreadGroupsTotal + threadGroupIdx];
+    if (collision) {
+      if (coreMarkers[otherIdx]) {
+        if (ourPointIsCore)
+          ourClusterId = unionizeClusters2(clusters, ourClusterId, otherIdx);
+        else
+          clusters[ourPointIdx] = otherIdx + clusters[otherIdx] - ourPointIdx;
+      } else {
+        if (ourPointIsCore) clusters[otherIdx] = ourClusterId - otherIdx;
       }
     }
   }
-  return ourClusterId;
+
+//  if (!ourPointIsCore) clusters[ourPointIdx] = ourClusterId;
 }
 
 static __global__ void kernel_clusterExpansion(
@@ -285,10 +280,8 @@ static __global__ void kernel_clusterExpansion(
     bool isDefinitelyCore = false;
 
     auto processObject = [&] (IdxType pointIdx, unsigned int mask) {
-      int lane = threadIdx.x % 32;
       float dx = xs[pointIdx] - x;
       float dy = ys[pointIdx] - y;
-      unsigned int oldClusterId = myClusterId;
       bool isNeighbor = dx * dx + dy * dy <= rsq;
       if (isNeighbor) {
         bool handleImmediately = isDefinitelyCore;
@@ -354,44 +347,6 @@ static __global__ void kernel_clusterExpansion(
     coreMarkers, clusters,
     s_collisions, ourPointIdx, myClusterId, *s_neighborCount >= coreThreshold
   );
-/*
-  // copy our collisions to global memory
-  for (unsigned int i = threadIdx.x; i < nThreadGroupsTotal; i += stride) collisionHandlingData.d_collisionMatrix[nThreadGroupsTotal * threadGroupIdx + i] = s_collisions[i];
-
-  __threadfence();
-
-  if (threadIdx.x == 0) collisionHandlingData.d_doneWithIdx[threadGroupIdx] = ourPointIdx;
-
-  __threadfence();
-
-  if (threadIdx.x == 0) (void)atomicAdd(collisionHandlingData.d_mutex, 1);
-
-  __threadfence();
-
-  for (unsigned int i = threadIdx.x; i < nThreadGroupsTotal; i += stride) {
-    if (i != blockIdx.x) {
-      IdxType otherIdx = collisionHandlingData.d_doneWithIdx[i];
-      if (otherIdx) {
-        bool collision = s_collisions[i] || collisionHandlingData.d_collisionMatrix[i * nThreadGroupsTotal + threadGroupIdx];
-        if (collision) {
-          if (*s_neighborCount >= coreThreshold) {
-            // we are core
-            if (coreMarkers[otherIdx]) {
-              myClusterId = unionizeClusters2(clusters, myClusterId, otherIdx);
-            } else {
-              clusters[otherIdx] = myClusterId - otherIdx;
-            }
-          } else {
-            // we are noise
-            if (coreMarkers[otherIdx]) {
-              clusters[ourPointIdx] = otherIdx + clusters[otherIdx] - ourPointIdx;
-            }
-          }
-        }
-      }
-    }
-  }
-  */
 }
 
 void allocateDeviceMemory(
