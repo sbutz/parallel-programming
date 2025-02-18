@@ -15,7 +15,7 @@ DPoints copyPointsToDevice(float const * x, float const * y, IdxType n) {
   return { n, d_x, d_y };
 }
 
-static __device__ IdxType unionizeClusters2(
+static __device__ IdxType unionizeClusters(
   IdxType * clusters,
   IdxType cluster1,
   IdxType cluster2
@@ -105,7 +105,7 @@ static __device__ IdxType unionizeWithinThreadGroup(
   // unionize within every warp
   for (unsigned int i = 1; i < 32; i <<= 1) {
     IdxType otherClusterId = __shfl_down_sync(0xffffffff, myClusterId, i);
-    if (!(laneId() & ((i << 1) - 1))) myClusterId = unionizeClusters2(clusters, myClusterId, otherClusterId);
+    if (!(laneId() & ((i << 1) - 1))) myClusterId = unionizeClusters(clusters, myClusterId, otherClusterId);
   }
   myClusterId = __shfl_sync(0xffffffff, myClusterId, 0);
 
@@ -127,7 +127,7 @@ static __device__ IdxType unionizeWithinThreadGroup(
         if (
           (otherValue + 1) &&
           !(laneId() & ((i << 1) - 1))
-        ) myValue = unionizeClusters2(clusters, myValue, otherValue);
+        ) myValue = unionizeClusters(clusters, myValue, otherValue);
       }
       nValuesToUnionize = (nValuesToUnionize + 31) / 32;
       if (laneId() == 0) s_interWarpUnionize[threadIdx.x / 32] == myValue;
@@ -140,14 +140,12 @@ static __device__ IdxType unionizeWithinThreadGroup(
   return myClusterId;
 }
 
-static __device__ void handleCollisions(
+static __global__ void kernel_handleCollisions(
   CollisionHandlingData collisionHandlingData,
-  bool * coreMarkers,
   IdxType * clusters,
-  bool * s_ourCollisions,
-  IdxType ourPointIdx,
-  IdxType ourClusterId,
-  bool ourPointIsCore
+  bool * coreMarkers,
+  IdxType n,
+  IdxType beginStep
 ) {
   unsigned int stride = blockDim.x; // blockDim.x must be a multiple of 32
   unsigned int nThreadGroupsPerBlock = blockDim.y;
@@ -155,34 +153,26 @@ static __device__ void handleCollisions(
   unsigned int nThreadGroupsTotal = nBlocks * nThreadGroupsPerBlock;
   unsigned int threadGroupIdx = blockDim.y * blockIdx.y + threadIdx.y;
 
-  // copy collisions of our thread block into our row in global memory
-  // TODO: Each thread group has its own collisions!
-  for (unsigned int i = threadIdx.x; i < nThreadGroupsTotal; i += stride)
-    collisionHandlingData.d_collisionMatrix[nThreadGroupsTotal * threadGroupIdx + i] = s_ourCollisions[i];
+  // TODO: This is bad. Wrap the following code into an if.
+  if (threadGroupIdx >= n - beginStep) return;
 
-  __threadfence();
-
-  // First thread in every thread group announces that thread group is done
-  if (threadIdx.x == 0) collisionHandlingData.d_doneWithIdx[threadGroupIdx] = ourPointIdx;
-
-  __threadfence();
-
-  // make sure other blocks observe our changes
-  // TODO: probably we can replace this by threadIdx.x == 0 && threadIdx.y == 0
-  if (threadIdx.x == 0 && threadIdx.y == 0) (void)atomicAdd(collisionHandlingData.d_mutex, 1);
-
-  __threadfence();
+  // all threads in a thread group always examine the same point, but the
+  //   cluster ids may diverge
+  IdxType ourPointIdx = beginStep + threadGroupIdx;
+  IdxType ourClusterId = ourPointIdx + clusters[ourPointIdx];
+  IdxType ourPointIsCore = coreMarkers[ourPointIdx];
 
   for (unsigned int i = threadIdx.x; i < nThreadGroupsTotal; i += stride) {
     if (i == blockIdx.x) continue;
     IdxType otherIdx = collisionHandlingData.d_doneWithIdx[i];
     if (!otherIdx) continue;
 
-    bool collision = s_ourCollisions[i] || collisionHandlingData.d_collisionMatrix[i * nThreadGroupsTotal + threadGroupIdx];
+    bool collision = collisionHandlingData.d_collisionMatrix[threadGroupIdx * nThreadGroupsTotal + i] ||
+      collisionHandlingData.d_collisionMatrix[i * nThreadGroupsTotal + threadGroupIdx];
     if (collision) {
       if (coreMarkers[otherIdx]) {
         if (ourPointIsCore)
-          ourClusterId = unionizeClusters2(clusters, ourClusterId, otherIdx);
+          ourClusterId = unionizeClusters(clusters, ourClusterId, otherIdx);
         else
           clusters[ourPointIdx] = otherIdx + clusters[otherIdx] - ourPointIdx;
       } else {
@@ -192,6 +182,21 @@ static __device__ void handleCollisions(
   }
 
 //  if (!ourPointIsCore) clusters[ourPointIdx] = ourClusterId;
+}
+
+static __device__ void sharedMemZero(
+  char * s_mem, IdxType nBytes
+) {
+  // zeroing one byte per thread is faster than one unsigned int per thread
+  //   -- reason unclear, but may be related to memory bank conflicts
+  IdxType strideStart = 0;
+  IdxType myOffset = blockDim.x * threadIdx.y + threadIdx.x;
+  while (nBytes - strideStart > blockDim.x * blockDim.y) {
+    s_mem [strideStart + myOffset] = 0;
+    strideStart += blockDim.x * blockDim.y;
+  }
+  if (myOffset < nBytes - strideStart) s_mem [strideStart + myOffset] = 0;
+
 }
 
 static __global__ void kernel_clusterExpansion(
@@ -239,23 +244,13 @@ static __global__ void kernel_clusterExpansion(
   IdxType * s_neighborCount  = (IdxType *) ((char *)s_neighborBuffer + dhi_max(coreThreshold, (blockDim.x + 31) / 32) * 4);
 
   // clear all shared memory
-  {
-    // zeroing one byte per thread is faster than one unsigned int per thread
-    //   -- reason unclear, but may be related to memory bank conflicts
-    IdxType strideStart = 0;
-    IdxType myOffset = blockDim.x * threadIdx.y + threadIdx.x;
-    IdxType total = sMemBytesPerThreadGroup * blockDim.y;
-    while (total - strideStart > blockDim.x * blockDim.y) {
-      sMem [strideStart + myOffset] = 0;
-      strideStart += blockDim.x * blockDim.y;
-    }
-    if (myOffset < total - strideStart) sMem [strideStart + myOffset] = 0;
-  }
+  sharedMemZero(sMem, sMemBytesPerThreadGroup * blockDim.y);
 
+  // TODO: This is bad. Wrap the following code into an if.
   if (threadGroupIdx >= n - beginStep) return;
 
   // all threads in a thread group always examine the same point, but the
-  //   cluster ids may diverge
+  //   cluster ids may diverge during the process
   IdxType ourPointIdx = beginStep + threadGroupIdx;
   IdxType myClusterId = ourPointIdx + clusters[ourPointIdx];
 
@@ -264,7 +259,7 @@ static __global__ void kernel_clusterExpansion(
   auto markAsCandidate = [&] (IdxType pointIdx) {
     if (pointIdx < beginStep) {
       if (coreMarkers[pointIdx]) {
-        myClusterId = unionizeClusters2(clusters, pointIdx, myClusterId);
+        myClusterId = unionizeClusters(clusters, pointIdx, myClusterId);
       } else {
         clusters[pointIdx] = myClusterId - pointIdx;
       }
@@ -342,11 +337,9 @@ static __global__ void kernel_clusterExpansion(
 
   __syncthreads();
 
-  handleCollisions(
-    collisionHandlingData,
-    coreMarkers, clusters,
-    s_collisions, ourPointIdx, myClusterId, *s_neighborCount >= coreThreshold
-  );
+  // copy collisions of our thread group into our row in global memory
+  for (unsigned int i = threadIdx.x; i < nThreadGroupsTotal; i += stride)
+    collisionHandlingData.d_collisionMatrix[nThreadGroupsTotal * threadGroupIdx + i] = s_collisions[i];
 }
 
 void allocateDeviceMemory(
@@ -394,10 +387,13 @@ void findClusters(
 
   IdxType startPos = 0;
   for (;;) {
-    CUDA_CHECK(cudaMemset((void *)collisionHandlingData.d_doneWithIdx, 0, nThreadGroupsTotal * sizeof(IdxType)))
     kernel_clusterExpansion <<<dim3(1, nBlocks), dim3(nThreadsPerBlock / nThreadGroupsPerBlock, nThreadGroupsPerBlock), sharedBytesPerBlock >>> (
       *d_clusters, *d_coreMarkers, xs, ys, n, startPos, collisionHandlingData, coreThreshold, rsq
     );
+    kernel_handleCollisions <<<dim3(1, nBlocks), dim3(nThreadsPerBlock / nThreadGroupsPerBlock, nThreadGroupsPerBlock) >>> (
+      collisionHandlingData, *d_clusters, *d_coreMarkers, n, startPos
+    );
+
     //CUDA_CHECK(cudaDeviceSynchronize())
 
     if (n - startPos <= nThreadGroupsTotal) break;
