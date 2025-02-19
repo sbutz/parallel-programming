@@ -141,7 +141,7 @@ static __device__ IdxType unionizeWithinThreadGroup(
 }
 
 static __global__ void kernel_handleCollisions(
-  CollisionHandlingData collisionHandlingData,
+  bool * collisionMatrix,
   IdxType * clusters,
   bool * coreMarkers,
   IdxType n,
@@ -164,11 +164,10 @@ static __global__ void kernel_handleCollisions(
 
   for (unsigned int i = threadIdx.x; i < nThreadGroupsTotal; i += stride) {
     if (i == blockIdx.x) continue;
-    IdxType otherIdx = collisionHandlingData.d_doneWithIdx[i];
-    if (!otherIdx) continue;
+    IdxType otherIdx = beginStep + i;
 
-    bool collision = collisionHandlingData.d_collisionMatrix[threadGroupIdx * nThreadGroupsTotal + i] ||
-      collisionHandlingData.d_collisionMatrix[i * nThreadGroupsTotal + threadGroupIdx];
+    bool collision = collisionMatrix[threadGroupIdx * nThreadGroupsTotal + i] ||
+      collisionMatrix[i * nThreadGroupsTotal + threadGroupIdx];
     if (collision) {
       if (coreMarkers[otherIdx]) {
         if (ourPointIsCore)
@@ -203,7 +202,7 @@ static __global__ void kernel_clusterExpansion(
   IdxType * clusters, bool * coreMarkers,
   float const * xs, float const * ys, IdxType n,
   IdxType beginStep,
-  CollisionHandlingData collisionHandlingData,
+  bool * collisionMatrix,
   IdxType coreThreshold, float rsq
 ) {
   unsigned int stride = blockDim.x; // blockDim.x must be a multiple of 32
@@ -339,13 +338,13 @@ static __global__ void kernel_clusterExpansion(
 
   // copy collisions of our thread group into our row in global memory
   for (unsigned int i = threadIdx.x; i < nThreadGroupsTotal; i += stride)
-    collisionHandlingData.d_collisionMatrix[nThreadGroupsTotal * threadGroupIdx + i] = s_collisions[i];
+    collisionMatrix[nThreadGroupsTotal * threadGroupIdx + i] = s_collisions[i];
 }
 
 void allocateDeviceMemory(
   bool ** d_coreMarkers, IdxType ** d_clusters,
-  CollisionHandlingData * collisionHandlingData,
-  int nBlocks,
+  bool ** d_collisionMatrix,
+  int nThreadGroups,
   IdxType n
 ) {
   CUDA_CHECK(cudaMalloc(d_coreMarkers, n * sizeof(bool)))
@@ -355,20 +354,12 @@ void allocateDeviceMemory(
   // TODO: Change later
   CUDA_CHECK(cudaMemset(*d_clusters, 0, n * sizeof(IdxType)))
 
-  auto chdSizes = CollisionHandlingData::calculateSizes(nBlocks);
-  unsigned int chdTotalSize = chdSizes.szMutex + chdSizes.szDoneWithIdx + chdSizes.szCollisionMatrix;
-  char * d_memCollisionData;
-  CUDA_CHECK(cudaMalloc(&d_memCollisionData, chdTotalSize))
-  collisionHandlingData->d_mutex = (unsigned int *)d_memCollisionData;
-  CUDA_CHECK(cudaMemset(collisionHandlingData->d_mutex, 0, sizeof(unsigned int)))
-  collisionHandlingData->d_doneWithIdx = (IdxType *)(d_memCollisionData + chdSizes.szMutex);
-  collisionHandlingData->d_collisionMatrix = (bool *)(d_memCollisionData + chdSizes.szMutex + chdSizes.szDoneWithIdx);
+  CUDA_CHECK(cudaMalloc(d_collisionMatrix, nThreadGroups * nThreadGroups * sizeof(bool)))
 }
 
 void findClusters(
   bool ** d_coreMarkers, IdxType ** d_clusters,
   float * xs, float * ys, IdxType n,
-  CollisionHandlingData collisionHandlingData,
   IdxType coreThreshold, float rsq
 ) {
   constexpr int nBlocks = 6;
@@ -383,15 +374,16 @@ void findClusters(
     1
   );
 
-  allocateDeviceMemory(d_coreMarkers, d_clusters, &collisionHandlingData, nThreadGroupsTotal, n);
+  bool * d_collisionMatrix;
+  allocateDeviceMemory(d_coreMarkers, d_clusters, &d_collisionMatrix, nThreadGroupsTotal, n);
 
   IdxType startPos = 0;
   for (;;) {
     kernel_clusterExpansion <<<dim3(1, nBlocks), dim3(nThreadsPerBlock / nThreadGroupsPerBlock, nThreadGroupsPerBlock), sharedBytesPerBlock >>> (
-      *d_clusters, *d_coreMarkers, xs, ys, n, startPos, collisionHandlingData, coreThreshold, rsq
+      *d_clusters, *d_coreMarkers, xs, ys, n, startPos, d_collisionMatrix, coreThreshold, rsq
     );
     kernel_handleCollisions <<<dim3(1, nBlocks), dim3(nThreadsPerBlock / nThreadGroupsPerBlock, nThreadGroupsPerBlock) >>> (
-      collisionHandlingData, *d_clusters, *d_coreMarkers, n, startPos
+      d_collisionMatrix, *d_clusters, *d_coreMarkers, n, startPos
     );
 
     //CUDA_CHECK(cudaDeviceSynchronize())

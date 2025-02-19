@@ -187,10 +187,9 @@ static auto runDbscan (
 
   bool * d_coreMarkers;
   IdxType * d_clusters;
-  CollisionHandlingData collisionHandlingData;
 
   findClusters(
-    &d_coreMarkers, &d_clusters, points.d_x, points.d_y, points.n, collisionHandlingData, coreThreshold, r * r
+    &d_coreMarkers, &d_clusters, points.d_x, points.d_y, points.n, coreThreshold, r * r
   );
   unionizeGpu(d_clusters, points.n);
 
