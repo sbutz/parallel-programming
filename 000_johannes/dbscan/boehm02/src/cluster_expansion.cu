@@ -149,23 +149,23 @@ static __global__ void kernel_handleCollisions(
   IdxType nThreadGroupsTotal
 ) {
   unsigned int tid = blockDim.x * blockIdx.x + threadIdx.x;
-  unsigned int nRequiredThreads = nThreadGroupsTotal * (nThreadGroupsTotal - 1) / 2;
+  unsigned int nRequiredThreads = nThreadGroupsTotal * nThreadGroupsTotal;
   if (tid < nRequiredThreads) {
     unsigned int atid = nRequiredThreads - 1 - tid; // adjusted tid (reverse)
     double x = 0.5 * (__dsqrt_rn(8.0 * atid + 1.0) - 1.0);
     double y = ceil(x);
-    unsigned int r = nThreadGroupsTotal - 1 - y;
-    unsigned int c = nThreadGroupsTotal - floor((x - y + 1) * y);
+    unsigned int r = tid / nThreadGroupsTotal;
+    unsigned int c = tid % nThreadGroupsTotal;
 
     bool collisionRToC = collisionMatrix[r * nThreadGroupsTotal + c];
     bool collisionCToR = collisionMatrix[c * nThreadGroupsTotal + r];
-    if (collisionRToC && collisionCToR) {
+    if (c < r && collisionRToC && collisionCToR) {
       // both points are core
       (void)unionizeClusters(clusters, beginStep + r, beginStep + c);
-    } else if (collisionRToC) {
+    } else if (c < r && collisionRToC) {
       // r is core
       clusters[beginStep + c] = r - c;
-    } else if (collisionCToR) {
+    } else if (c < r && collisionCToR) {
       // c is core
       clusters[beginStep + r] = c - r;
     }
@@ -422,7 +422,7 @@ void findClusters(
     kernel_clusterExpansion <<<dim3(1, nBlocks), dim3(nThreadsPerBlock / nThreadGroupsPerBlock, nThreadGroupsPerBlock), sharedBytesPerBlock >>> (
       *d_clusters, *d_coreMarkers, xs, ys, n, startPos, d_collisionMatrix, coreThreshold, rsq
     );
-    unsigned int nCHThreads = nThreadGroupsTotal * (nThreadGroupsTotal - 1) / 2;
+    unsigned int nCHThreads = nThreadGroupsTotal * nThreadGroupsTotal;
     unsigned int nCHThreadsPerBlock = 128;
     unsigned int nCHBlocks = (nCHThreads + nCHThreadsPerBlock - 1) / nCHThreadsPerBlock;
     kernel_handleCollisions <<<nCHBlocks, nCHThreadsPerBlock>>> (
