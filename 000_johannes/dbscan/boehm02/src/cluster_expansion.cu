@@ -145,42 +145,31 @@ static __global__ void kernel_handleCollisions(
   IdxType * clusters,
   bool * coreMarkers,
   IdxType n,
-  IdxType beginStep
+  IdxType beginStep,
+  IdxType nThreadGroupsTotal
 ) {
-  unsigned int stride = blockDim.x; // blockDim.x must be a multiple of 32
-  unsigned int nThreadGroupsPerBlock = blockDim.y;
-  unsigned int nBlocks = gridDim.y;
-  unsigned int nThreadGroupsTotal = nBlocks * nThreadGroupsPerBlock;
-  unsigned int threadGroupIdx = blockDim.y * blockIdx.y + threadIdx.y;
+  unsigned int tid = blockDim.x * blockIdx.x + threadIdx.x;
+  unsigned int nRequiredThreads = nThreadGroupsTotal * (nThreadGroupsTotal - 1) / 2;
+  if (tid < nRequiredThreads) {
+    unsigned int atid = nRequiredThreads - 1 - tid; // adjusted tid (reverse)
+    double x = 0.5 * (__dsqrt_rn(8.0 * atid + 1.0) - 1.0);
+    double y = ceil(x);
+    unsigned int r = nThreadGroupsTotal - 1 - y;
+    unsigned int c = nThreadGroupsTotal - floor((x - y + 1) * y);
 
-  // TODO: This is bad. Wrap the following code into an if.
-  if (threadGroupIdx >= n - beginStep) return;
-
-  // all threads in a thread group always examine the same point, but the
-  //   cluster ids may diverge
-  IdxType ourPointIdx = beginStep + threadGroupIdx;
-  IdxType ourClusterId = ourPointIdx + clusters[ourPointIdx];
-  IdxType ourPointIsCore = coreMarkers[ourPointIdx];
-
-  for (unsigned int i = threadIdx.x; i < nThreadGroupsTotal; i += stride) {
-    if (i == blockIdx.x) continue;
-    IdxType otherIdx = beginStep + i;
-
-    bool collision = collisionMatrix[threadGroupIdx * nThreadGroupsTotal + i] ||
-      collisionMatrix[i * nThreadGroupsTotal + threadGroupIdx];
-    if (collision) {
-      if (coreMarkers[otherIdx]) {
-        if (ourPointIsCore)
-          ourClusterId = unionizeClusters(clusters, ourClusterId, otherIdx);
-        else
-          clusters[ourPointIdx] = otherIdx + clusters[otherIdx] - ourPointIdx;
-      } else {
-        if (ourPointIsCore) clusters[otherIdx] = ourClusterId - otherIdx;
-      }
+    bool collisionRToC = collisionMatrix[r * nThreadGroupsTotal + c];
+    bool collisionCToR = collisionMatrix[c * nThreadGroupsTotal + r];
+    if (collisionRToC && collisionCToR) {
+      // both points are core
+      (void)unionizeClusters(clusters, beginStep + r, beginStep + c);
+    } else if (collisionRToC) {
+      // r is core
+      clusters[beginStep + c] = r - c;
+    } else if (collisionCToR) {
+      // c is core
+      clusters[beginStep + r] = c - r;
     }
   }
-
-//  if (!ourPointIsCore) clusters[ourPointIdx] = ourClusterId;
 }
 
 static __device__ void sharedMemZero(
@@ -245,90 +234,90 @@ static __global__ void kernel_clusterExpansion(
   // clear all shared memory
   sharedMemZero(sMem, sMemBytesPerThreadGroup * blockDim.y);
 
-  // TODO: This is bad. Wrap the following code into an if.
-  if (threadGroupIdx >= n - beginStep) return;
+  if (threadGroupIdx < n - beginStep) {
+    // all threads in a thread group always examine the same point, but the
+    //   cluster ids may diverge during the process
+    IdxType ourPointIdx = beginStep + threadGroupIdx;
+    IdxType myClusterId = ourPointIdx + clusters[ourPointIdx];
 
-  // all threads in a thread group always examine the same point, but the
-  //   cluster ids may diverge during the process
-  IdxType ourPointIdx = beginStep + threadGroupIdx;
-  IdxType myClusterId = ourPointIdx + clusters[ourPointIdx];
+    __syncthreads();
 
-  __syncthreads();
-
-  auto markAsCandidate = [&] (IdxType pointIdx) {
-    if (pointIdx < beginStep) {
-      if (coreMarkers[pointIdx]) {
-        myClusterId = unionizeClusters(clusters, pointIdx, myClusterId);
+    auto markAsCandidate = [&] (IdxType pointIdx) {
+      if (pointIdx < beginStep) {
+        if (coreMarkers[pointIdx]) {
+          myClusterId = unionizeClusters(clusters, pointIdx, myClusterId);
+        } else {
+          clusters[pointIdx] = myClusterId - pointIdx;
+        }
+      } else if (pointIdx < endStep) {
+        s_collisions[pointIdx - beginStep] = true;
       } else {
         clusters[pointIdx] = myClusterId - pointIdx;
-      }
-    } else if (pointIdx < endStep) {
-      s_collisions[pointIdx - beginStep] = true;
-    } else {
-      clusters[pointIdx] = myClusterId - pointIdx;
-    }
-  };
-
-  {
-    float x = xs[ourPointIdx], y = ys[ourPointIdx];
-    bool isDefinitelyCore = false;
-
-    auto processObject = [&] (IdxType pointIdx, unsigned int mask) {
-      float dx = xs[pointIdx] - x;
-      float dy = ys[pointIdx] - y;
-      bool isNeighbor = dx * dx + dy * dy <= rsq;
-      if (isNeighbor) {
-        bool handleImmediately = isDefinitelyCore;
-        if (!handleImmediately) {
-          auto r = LargeStridePolicy::tryAppendToNeighborBuffer(s_neighborBuffer, s_neighborCount, coreThreshold, pointIdx);
-          handleImmediately = !r.wasAppended;
-          isDefinitelyCore = r.maxLengthReached;
-        }
-        if (handleImmediately) markAsCandidate(pointIdx);
       }
     };
 
     {
-      IdxType strideIdx = 0;
-      for (; strideIdx < (n - 1) / stride; ++strideIdx) processObject(strideIdx * stride + threadIdx.x, 0xffffffff);
-      unsigned int remaining = n - strideIdx * stride;
-      if (threadIdx.x < remaining) {
-        unsigned int remainingFromWarpStart = remaining - (threadIdx.x & ~0x1fu);
-        unsigned int mask = remainingFromWarpStart >= 32 ? 0xffffffff : (1u << remainingFromWarpStart) - 1u;
-        processObject(strideIdx * stride + threadIdx.x, mask);
-      }
-    }
-    
-    __syncthreads();
+      float x = xs[ourPointIdx], y = ys[ourPointIdx];
+      bool isDefinitelyCore = false;
 
-    if (*s_neighborCount >= coreThreshold) {
-      for (int i = threadIdx.x; i < coreThreshold; i += stride) {
-        markAsCandidate(s_neighborBuffer[i]);
-      }
-    }
-
-    __syncthreads();
-
-    myClusterId = unionizeWithinThreadGroup(s_interWarpUnionize, clusters, myClusterId);
-
-    __syncthreads();
-
-    if (*s_neighborCount >= coreThreshold) {
-      if (threadIdx.x == 0) {
-        clusters[ourPointIdx] = myClusterId - ourPointIdx;
-        coreMarkers[ourPointIdx] = true;
-      }
-    } else {
-      int cnt = *s_neighborCount;
-      for (int i = threadIdx.x; i < cnt; i += stride) {
-        IdxType neighbor = s_neighborBuffer[i];
-        if (coreMarkers[neighbor]) {
-          if (neighbor < beginStep) {
-            clusters[ourPointIdx] = neighbor + clusters[neighbor] - ourPointIdx;
-          } else if (neighbor < endStep) {
-            s_collisions[neighbor - beginStep] = true;
+      auto processObject = [&] (IdxType pointIdx, unsigned int mask) {
+        float dx = xs[pointIdx] - x;
+        float dy = ys[pointIdx] - y;
+        bool isNeighbor = dx * dx + dy * dy <= rsq;
+        if (isNeighbor) {
+          bool handleImmediately = isDefinitelyCore;
+          if (!handleImmediately) {
+            auto r = LargeStridePolicy::tryAppendToNeighborBuffer(s_neighborBuffer, s_neighborCount, coreThreshold, pointIdx);
+            handleImmediately = !r.wasAppended;
+            isDefinitelyCore = r.maxLengthReached;
           }
-          break;
+          if (handleImmediately) markAsCandidate(pointIdx);
+        }
+      };
+
+      {
+        IdxType strideIdx = 0;
+        for (; strideIdx < (n - 1) / stride; ++strideIdx) processObject(strideIdx * stride + threadIdx.x, 0xffffffff);
+        unsigned int remaining = n - strideIdx * stride;
+        if (threadIdx.x < remaining) {
+          unsigned int remainingFromWarpStart = remaining - (threadIdx.x & ~0x1fu);
+          unsigned int mask = remainingFromWarpStart >= 32 ? 0xffffffff : (1u << remainingFromWarpStart) - 1u;
+          processObject(strideIdx * stride + threadIdx.x, mask);
+        }
+      }
+      
+      __syncthreads();
+
+      if (*s_neighborCount >= coreThreshold) {
+        for (int i = threadIdx.x; i < coreThreshold; i += stride) {
+          markAsCandidate(s_neighborBuffer[i]);
+        }
+      }
+
+      __syncthreads();
+
+      myClusterId = unionizeWithinThreadGroup(s_interWarpUnionize, clusters, myClusterId);
+
+      __syncthreads();
+
+      if (*s_neighborCount >= coreThreshold) {
+        if (threadIdx.x == 0) {
+          clusters[ourPointIdx] = myClusterId - ourPointIdx;
+          coreMarkers[ourPointIdx] = true;
+        }
+      } else {
+        int cnt = *s_neighborCount;
+        for (int i = threadIdx.x; i < cnt; i += stride) {
+          IdxType neighbor = s_neighborBuffer[i];
+          if (coreMarkers[neighbor]) {
+            if (neighbor < beginStep) {
+              clusters[ourPointIdx] = neighbor + clusters[neighbor] - ourPointIdx;
+            } else if (neighbor < endStep) {
+              //We do not report collisions unless we are core.
+              //s_collisions[neighbor - beginStep] = true;
+            }
+            break;
+          }
         }
       }
     }
@@ -357,6 +346,57 @@ void allocateDeviceMemory(
   CUDA_CHECK(cudaMalloc(d_collisionMatrix, nThreadGroups * nThreadGroups * sizeof(bool)))
 }
 
+
+void unionizeCpu(std::vector<IdxType> & clusters) {
+  std::vector<IdxType> stack;
+  for (IdxType i = 0; i < clusters.size(); ++i) {
+    IdxType child = i;
+    IdxType parentOffset = clusters[child];
+    if (parentOffset == 0) continue; // noise
+    do {
+      stack.push_back(child);
+      child = child + parentOffset;
+      parentOffset = clusters[child];
+    } while (parentOffset);
+    IdxType top = child;
+    while (stack.size() > 0) {
+      IdxType current = stack.back(); stack.pop_back();
+      clusters[current] = top - current;
+    }
+  }
+}
+
+static __global__ void kernel_unionize(IdxType * clusters, IdxType n) {
+  unsigned int tid = blockIdx.x * blockDim.x + threadIdx.x;
+  unsigned int stride = blockDim.x * gridDim.x;
+
+  IdxType strideBegin = 0;
+
+  auto doWork = [&] {
+    IdxType idx = strideBegin + tid;
+    IdxType cl = idx;
+    IdxType pOffset = clusters[idx];
+    if (pOffset) {
+      for (;;) {
+        cl += pOffset;
+        pOffset = clusters[cl];
+        if (!pOffset) break;
+      }
+      IdxType top = cl;
+      cl = idx;
+      for (;;) {
+        pOffset = clusters[cl];
+        if (!pOffset) break;
+        clusters[cl] = top - cl;
+        cl += pOffset;
+      }
+    }
+  };
+
+  if (n > stride) for (; strideBegin < n - stride; strideBegin += stride) doWork();
+  if (tid < n - strideBegin) doWork();
+}
+
 void findClusters(
   bool ** d_coreMarkers, IdxType ** d_clusters,
   float * xs, float * ys, IdxType n,
@@ -382,8 +422,11 @@ void findClusters(
     kernel_clusterExpansion <<<dim3(1, nBlocks), dim3(nThreadsPerBlock / nThreadGroupsPerBlock, nThreadGroupsPerBlock), sharedBytesPerBlock >>> (
       *d_clusters, *d_coreMarkers, xs, ys, n, startPos, d_collisionMatrix, coreThreshold, rsq
     );
-    kernel_handleCollisions <<<dim3(1, nBlocks), dim3(nThreadsPerBlock / nThreadGroupsPerBlock, nThreadGroupsPerBlock) >>> (
-      d_collisionMatrix, *d_clusters, *d_coreMarkers, n, startPos
+    unsigned int nCHThreads = nThreadGroupsTotal * (nThreadGroupsTotal - 1) / 2;
+    unsigned int nCHThreadsPerBlock = 128;
+    unsigned int nCHBlocks = (nCHThreads + nCHThreadsPerBlock - 1) / nCHThreadsPerBlock;
+    kernel_handleCollisions <<<nCHBlocks, nCHThreadsPerBlock>>> (
+      d_collisionMatrix, *d_clusters, *d_coreMarkers, n, startPos, nThreadGroupsTotal
     );
 
     //CUDA_CHECK(cudaDeviceSynchronize())
@@ -391,56 +434,8 @@ void findClusters(
     if (n - startPos <= nThreadGroupsTotal) break;
     startPos += nThreadGroupsTotal;
   }
+  kernel_unionize <<<nBlocks, nThreadsPerBlock>>> (*d_clusters, n);
   CUDA_CHECK(cudaGetLastError())
-}
-
-void unionizeCpu(std::vector<IdxType> & clusters) {
-  std::vector<IdxType> stack;
-  for (IdxType i = 0; i < clusters.size(); ++i) {
-    IdxType child = i + 1;
-    IdxType parent = child + clusters[child - 1] + 1;
-    if (parent == 0 || parent == child) continue; // noise
-    do {
-      stack.push_back(child);
-      child = parent;
-      parent = child + clusters[child - 1] + 1;
-    } while (parent != child);
-    IdxType top = child;
-    while (stack.size() > 0) {
-      IdxType current = stack.back(); stack.pop_back();
-      clusters[current - 1] = top - current;
-    }
-  }
-}
-
-static __global__ void kernel_unionize(IdxType * clusters, IdxType n) {
-  unsigned int tid = blockIdx.x * blockDim.x + threadIdx.x;
-  unsigned int stride = blockDim.x * gridDim.x;
-
-  IdxType strideBegin = 0;
-
-  auto doWork = [&] {
-    IdxType idx = strideBegin + tid;
-    IdxType cl = idx;
-    IdxType pOffset = clusters[idx];
-    if (!pOffset) {
-      for (;;) {
-        cl += pOffset;
-        pOffset = clusters[cl];
-        if (!pOffset) break;
-      }
-      IdxType top = cl;
-      cl = idx;
-      for (;;) {
-        pOffset = clusters[cl];
-        if (!pOffset) break;
-        clusters[cl] = top - cl;
-      }
-    }
-  };
-
-  if (n > stride) for (; strideBegin < n - stride; strideBegin += stride) doWork();
-  if (tid < n - strideBegin) doWork();
 }
 
 void unionizeGpu(IdxType * d_clusters, IdxType n) {
