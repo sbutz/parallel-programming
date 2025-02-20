@@ -141,24 +141,22 @@ static __device__ IdxType unionizeWithinThreadGroup(
 }
 
 static __global__ void kernel_handleCollisions(
-  bool * collisionMatrix,
+  unsigned int * collisionMatrix,
   IdxType * clusters,
   bool * coreMarkers,
   IdxType n,
   IdxType beginStep,
   IdxType nThreadGroupsTotal
 ) {
+  unsigned int collisionPitch = (nThreadGroupsTotal + 31) / 32;
   unsigned int tid = blockDim.x * blockIdx.x + threadIdx.x;
   unsigned int nRequiredThreads = nThreadGroupsTotal * nThreadGroupsTotal;
   if (tid < nRequiredThreads) {
-    unsigned int atid = nRequiredThreads - 1 - tid; // adjusted tid (reverse)
-    double x = 0.5 * (__dsqrt_rn(8.0 * atid + 1.0) - 1.0);
-    double y = ceil(x);
     unsigned int r = tid / nThreadGroupsTotal;
     unsigned int c = tid % nThreadGroupsTotal;
 
-    bool collisionRToC = collisionMatrix[r * nThreadGroupsTotal + c];
-    bool collisionCToR = collisionMatrix[c * nThreadGroupsTotal + r];
+    bool collisionRToC = collisionMatrix[r * collisionPitch + c / 32] & (1u << (c % 32));
+    bool collisionCToR = collisionMatrix[c * collisionPitch + r / 32] & (1u << (r % 32));
     if (c < r && collisionRToC && collisionCToR) {
       // both points are core
       (void)unionizeClusters(clusters, beginStep + r, beginStep + c);
@@ -191,7 +189,7 @@ static __global__ void kernel_clusterExpansion(
   IdxType * clusters, bool * coreMarkers,
   float const * xs, float const * ys, IdxType n,
   IdxType beginStep,
-  bool * collisionMatrix,
+  unsigned int * collisionMatrix,
   IdxType coreThreshold, float rsq
 ) {
   unsigned int stride = blockDim.x; // blockDim.x must be a multiple of 32
@@ -199,6 +197,7 @@ static __global__ void kernel_clusterExpansion(
   unsigned int nBlocks = gridDim.y;
   unsigned int nThreadGroupsTotal = nBlocks * nThreadGroupsPerBlock;
   unsigned int threadGroupIdx = blockDim.y * blockIdx.y + threadIdx.y;
+  unsigned int collisionPitch = (nThreadGroupsTotal + 31) / 32;
 
   IdxType endStep = nThreadGroupsTotal < n - beginStep ? beginStep + nThreadGroupsTotal : n;
 
@@ -309,15 +308,7 @@ static __global__ void kernel_clusterExpansion(
         int cnt = *s_neighborCount;
         for (int i = threadIdx.x; i < cnt; i += stride) {
           IdxType neighbor = s_neighborBuffer[i];
-          if (coreMarkers[neighbor]) {
-            if (neighbor < beginStep) {
-              clusters[ourPointIdx] = neighbor + clusters[neighbor] - ourPointIdx;
-            } else if (neighbor < endStep) {
-              //We do not report collisions unless we are core.
-              //s_collisions[neighbor - beginStep] = true;
-            }
-            break;
-          }
+          if (neighbor < beginStep && coreMarkers[neighbor]) clusters[ourPointIdx] = neighbor - ourPointIdx;
         }
       }
     }
@@ -325,14 +316,37 @@ static __global__ void kernel_clusterExpansion(
 
   __syncthreads();
 
+  {
+    unsigned int strideBegin = 0;
+
+    auto assembleMask = [&] (unsigned int m) {
+      #pragma unroll
+      for (int j = 1; j < 32; j <<= 1) {
+        m |= __shfl_down_sync(0xffffffff, m, j) << j;
+      }
+      return m;
+    };
+
+    if (stride < nThreadGroupsTotal) {
+      for (; strideBegin < nThreadGroupsTotal - stride; strideBegin += stride) {
+        unsigned int collisionMask = assembleMask(s_collisions[strideBegin + threadIdx.x]);
+        if (laneId == 0) {
+          collisionMatrix[collisionPitch * threadGroupIdx + (strideBegin + threadIdx.x) / 32] = collisionMask;
+        }
+      }
+    }
+    unsigned int collisionMask = assembleMask(strideBegin + threadIdx.x < nThreadGroupsTotal ? s_collisions[strideBegin + threadIdx.x] : 0);
+    if (laneId == 0 && strideBegin + threadIdx.x < nThreadGroupsTotal) collisionMatrix[collisionPitch * threadGroupIdx + (strideBegin + threadIdx.x) / 32] = collisionMask;
+  }
+
   // copy collisions of our thread group into our row in global memory
-  for (unsigned int i = threadIdx.x; i < nThreadGroupsTotal; i += stride)
-    collisionMatrix[nThreadGroupsTotal * threadGroupIdx + i] = s_collisions[i];
+  //for (unsigned int i = threadIdx.x; i < nThreadGroupsTotal; i += stride)
+  //  collisionMatrix[nThreadGroupsTotal * threadGroupIdx + i] = s_collisions[i];
 }
 
 void allocateDeviceMemory(
   bool ** d_coreMarkers, IdxType ** d_clusters,
-  bool ** d_collisionMatrix,
+  unsigned int ** d_collisionMatrix,
   int nThreadGroups,
   IdxType n
 ) {
@@ -343,7 +357,8 @@ void allocateDeviceMemory(
   // TODO: Change later
   CUDA_CHECK(cudaMemset(*d_clusters, 0, n * sizeof(IdxType)))
 
-  CUDA_CHECK(cudaMalloc(d_collisionMatrix, nThreadGroups * nThreadGroups * sizeof(bool)))
+  unsigned int collisionPitch = (nThreadGroups + 31) / 32;
+  CUDA_CHECK(cudaMalloc(d_collisionMatrix, collisionPitch * nThreadGroups * sizeof(unsigned int)))
 }
 
 
@@ -414,7 +429,7 @@ void findClusters(
     1
   );
 
-  bool * d_collisionMatrix;
+  unsigned int * d_collisionMatrix;
   allocateDeviceMemory(d_coreMarkers, d_clusters, &d_collisionMatrix, nThreadGroupsTotal, n);
 
   IdxType startPos = 0;
