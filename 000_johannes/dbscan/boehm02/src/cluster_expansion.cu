@@ -185,6 +185,99 @@ static __device__ void sharedMemZero(
 
 }
 
+static __device__ IdxType processPoints(
+  bool * coreMarkers, IdxType * clusters, bool * s_collisions,
+  IdxType * s_neighborBuffer, IdxType * s_neighborCount,
+  float const * xs, float const * ys, IdxType n,
+  IdxType coreThreshold, float rsq,
+  IdxType beginStep, IdxType endStep,
+  IdxType ourPointIdx, IdxType myClusterId
+) {
+  unsigned int stride = blockDim.x;
+
+  auto markAsCandidate = [&] (IdxType pointIdx) {
+    if (pointIdx < beginStep) {
+      if (coreMarkers[pointIdx]) {
+        myClusterId = unionizeClusters(clusters, pointIdx, myClusterId);
+      } else {
+        clusters[pointIdx] = myClusterId - pointIdx;
+      }
+    } else if (pointIdx < endStep) {
+      s_collisions[pointIdx - beginStep] = true;
+    } else {
+      clusters[pointIdx] = myClusterId - pointIdx;
+    }
+  };
+
+  float x = xs[ourPointIdx], y = ys[ourPointIdx];
+  bool isDefinitelyCore = false;
+
+  auto processObject = [&] (IdxType pointIdx, unsigned int mask) {
+    float dx = xs[pointIdx] - x;
+    float dy = ys[pointIdx] - y;
+    bool isNeighbor = dx * dx + dy * dy <= rsq;
+    if (isNeighbor) {
+      bool handleImmediately = isDefinitelyCore;
+      if (!handleImmediately) {
+        auto r = LargeStridePolicy::tryAppendToNeighborBuffer(s_neighborBuffer, s_neighborCount, coreThreshold, pointIdx);
+        handleImmediately = !r.wasAppended;
+        isDefinitelyCore = r.maxLengthReached;
+      }
+      if (handleImmediately) markAsCandidate(pointIdx);
+    }
+  };
+
+  IdxType strideIdx = 0;
+  for (; strideIdx < (n - 1) / stride; ++strideIdx) processObject(strideIdx * stride + threadIdx.x, 0xffffffff);
+  unsigned int remaining = n - strideIdx * stride;
+  if (threadIdx.x < remaining) {
+    unsigned int remainingFromWarpStart = remaining - (threadIdx.x & ~0x1fu);
+    unsigned int mask = remainingFromWarpStart >= 32 ? 0xffffffff : (1u << remainingFromWarpStart) - 1u;
+    processObject(strideIdx * stride + threadIdx.x, mask);
+  }
+    
+  __syncthreads();
+
+  if (*s_neighborCount >= coreThreshold) {
+    for (int i = threadIdx.x; i < coreThreshold; i += stride) {
+      markAsCandidate(s_neighborBuffer[i]);
+    }
+  }
+
+  return myClusterId;
+}
+
+static __device__ void writeCollisions(
+  unsigned int * collisionMatrix,
+  bool * s_collisions,
+  IdxType nThreadGroupsTotal
+) {
+  unsigned int stride = blockDim.x;
+  unsigned int threadGroupIdx = blockDim.y * blockIdx.y + threadIdx.y;
+  unsigned int collisionPitch = (nThreadGroupsTotal + 31) / 32;
+
+  unsigned int strideBegin = 0;
+
+  auto assembleMask = [&] (unsigned int m) {
+    #pragma unroll
+    for (int j = 1; j < 32; j <<= 1) {
+      m |= __shfl_down_sync(0xffffffff, m, j) << j;
+    }
+    return m;
+  };
+
+  if (stride < nThreadGroupsTotal) {
+    for (; strideBegin < nThreadGroupsTotal - stride; strideBegin += stride) {
+      unsigned int collisionMask = assembleMask(s_collisions[strideBegin + threadIdx.x]);
+      if (laneId() == 0) {
+        collisionMatrix[collisionPitch * threadGroupIdx + (strideBegin + threadIdx.x) / 32] = collisionMask;
+      }
+    }
+  }
+  unsigned int collisionMask = assembleMask(strideBegin + threadIdx.x < nThreadGroupsTotal ? s_collisions[strideBegin + threadIdx.x] : 0);
+  if (laneId() == 0 && strideBegin + threadIdx.x < nThreadGroupsTotal) collisionMatrix[collisionPitch * threadGroupIdx + (strideBegin + threadIdx.x) / 32] = collisionMask;
+}
+
 static __global__ void kernel_clusterExpansion(
   IdxType * clusters, bool * coreMarkers,
   float const * xs, float const * ys, IdxType n,
@@ -197,9 +290,6 @@ static __global__ void kernel_clusterExpansion(
   unsigned int nBlocks = gridDim.y;
   unsigned int nThreadGroupsTotal = nBlocks * nThreadGroupsPerBlock;
   unsigned int threadGroupIdx = blockDim.y * blockIdx.y + threadIdx.y;
-  unsigned int collisionPitch = (nThreadGroupsTotal + 31) / 32;
-
-  IdxType endStep = nThreadGroupsTotal < n - beginStep ? beginStep + nThreadGroupsTotal : n;
 
   // Shared memory:
   // s_collisions: nThreadGroupsTotal bools
@@ -241,107 +331,39 @@ static __global__ void kernel_clusterExpansion(
 
     __syncthreads();
 
-    auto markAsCandidate = [&] (IdxType pointIdx) {
-      if (pointIdx < beginStep) {
-        if (coreMarkers[pointIdx]) {
-          myClusterId = unionizeClusters(clusters, pointIdx, myClusterId);
-        } else {
-          clusters[pointIdx] = myClusterId - pointIdx;
-        }
-      } else if (pointIdx < endStep) {
-        s_collisions[pointIdx - beginStep] = true;
-      } else {
-        clusters[pointIdx] = myClusterId - pointIdx;
-      }
-    };
+    myClusterId = processPoints(
+      coreMarkers, clusters, s_collisions,
+      s_neighborBuffer, s_neighborCount,
+      xs, ys, n,
+      coreThreshold, rsq,
+      beginStep, nThreadGroupsTotal < n - beginStep ? beginStep + nThreadGroupsTotal : n,
+      ourPointIdx, myClusterId
+    );
 
-    {
-      float x = xs[ourPointIdx], y = ys[ourPointIdx];
-      bool isDefinitelyCore = false;
+    __syncthreads();
 
-      auto processObject = [&] (IdxType pointIdx, unsigned int mask) {
-        float dx = xs[pointIdx] - x;
-        float dy = ys[pointIdx] - y;
-        bool isNeighbor = dx * dx + dy * dy <= rsq;
-        if (isNeighbor) {
-          bool handleImmediately = isDefinitelyCore;
-          if (!handleImmediately) {
-            auto r = LargeStridePolicy::tryAppendToNeighborBuffer(s_neighborBuffer, s_neighborCount, coreThreshold, pointIdx);
-            handleImmediately = !r.wasAppended;
-            isDefinitelyCore = r.maxLengthReached;
-          }
-          if (handleImmediately) markAsCandidate(pointIdx);
-        }
-      };
+    IdxType neighborCount = *s_neighborCount;
 
-      {
-        IdxType strideIdx = 0;
-        for (; strideIdx < (n - 1) / stride; ++strideIdx) processObject(strideIdx * stride + threadIdx.x, 0xffffffff);
-        unsigned int remaining = n - strideIdx * stride;
-        if (threadIdx.x < remaining) {
-          unsigned int remainingFromWarpStart = remaining - (threadIdx.x & ~0x1fu);
-          unsigned int mask = remainingFromWarpStart >= 32 ? 0xffffffff : (1u << remainingFromWarpStart) - 1u;
-          processObject(strideIdx * stride + threadIdx.x, mask);
-        }
-      }
-      
-      __syncthreads();
-
-      if (*s_neighborCount >= coreThreshold) {
-        for (int i = threadIdx.x; i < coreThreshold; i += stride) {
-          markAsCandidate(s_neighborBuffer[i]);
-        }
-      }
-
-      __syncthreads();
-
+    if (neighborCount >= coreThreshold) {
       myClusterId = unionizeWithinThreadGroup(s_interWarpUnionize, clusters, myClusterId);
 
       __syncthreads();
-
-      if (*s_neighborCount >= coreThreshold) {
-        if (threadIdx.x == 0) {
-          clusters[ourPointIdx] = myClusterId - ourPointIdx;
-          coreMarkers[ourPointIdx] = true;
-        }
-      } else {
-        int cnt = *s_neighborCount;
-        for (int i = threadIdx.x; i < cnt; i += stride) {
-          IdxType neighbor = s_neighborBuffer[i];
-          if (neighbor < beginStep && coreMarkers[neighbor]) clusters[ourPointIdx] = neighbor - ourPointIdx;
-        }
+  
+      if (threadIdx.x == 0) {
+        clusters[ourPointIdx] = myClusterId - ourPointIdx;
+        coreMarkers[ourPointIdx] = true;
+      }
+    } else {
+      for (int i = threadIdx.x; i < neighborCount; i += stride) {
+        IdxType neighbor = s_neighborBuffer[i];
+        if (neighbor < beginStep && coreMarkers[neighbor]) { clusters[ourPointIdx] = neighbor - ourPointIdx; break; }
       }
     }
   }
 
   __syncthreads();
 
-  {
-    unsigned int strideBegin = 0;
-
-    auto assembleMask = [&] (unsigned int m) {
-      #pragma unroll
-      for (int j = 1; j < 32; j <<= 1) {
-        m |= __shfl_down_sync(0xffffffff, m, j) << j;
-      }
-      return m;
-    };
-
-    if (stride < nThreadGroupsTotal) {
-      for (; strideBegin < nThreadGroupsTotal - stride; strideBegin += stride) {
-        unsigned int collisionMask = assembleMask(s_collisions[strideBegin + threadIdx.x]);
-        if (laneId == 0) {
-          collisionMatrix[collisionPitch * threadGroupIdx + (strideBegin + threadIdx.x) / 32] = collisionMask;
-        }
-      }
-    }
-    unsigned int collisionMask = assembleMask(strideBegin + threadIdx.x < nThreadGroupsTotal ? s_collisions[strideBegin + threadIdx.x] : 0);
-    if (laneId == 0 && strideBegin + threadIdx.x < nThreadGroupsTotal) collisionMatrix[collisionPitch * threadGroupIdx + (strideBegin + threadIdx.x) / 32] = collisionMask;
-  }
-
-  // copy collisions of our thread group into our row in global memory
-  //for (unsigned int i = threadIdx.x; i < nThreadGroupsTotal; i += stride)
-  //  collisionMatrix[nThreadGroupsTotal * threadGroupIdx + i] = s_collisions[i];
+  writeCollisions(collisionMatrix, s_collisions, nThreadGroupsTotal);
 }
 
 void allocateDeviceMemory(
