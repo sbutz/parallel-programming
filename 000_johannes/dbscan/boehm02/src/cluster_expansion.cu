@@ -212,7 +212,7 @@ static __device__ IdxType processPoints(
   float x = xs[ourPointIdx], y = ys[ourPointIdx];
   bool isDefinitelyCore = false;
 
-  auto processObject = [&] (IdxType pointIdx, unsigned int mask) {
+  auto processObject = [&] (IdxType pointIdx) {
     float dx = xs[pointIdx] - x;
     float dy = ys[pointIdx] - y;
     bool isNeighbor = dx * dx + dy * dy <= rsq;
@@ -228,13 +228,8 @@ static __device__ IdxType processPoints(
   };
 
   IdxType strideIdx = 0;
-  for (; strideIdx < (n - 1) / stride; ++strideIdx) processObject(strideIdx * stride + threadIdx.x, 0xffffffff);
-  unsigned int remaining = n - strideIdx * stride;
-  if (threadIdx.x < remaining) {
-    unsigned int remainingFromWarpStart = remaining - (threadIdx.x & ~0x1fu);
-    unsigned int mask = remainingFromWarpStart >= 32 ? 0xffffffff : (1u << remainingFromWarpStart) - 1u;
-    processObject(strideIdx * stride + threadIdx.x, mask);
-  }
+  for (; strideIdx < (n - 1) / stride; ++strideIdx) processObject(strideIdx * stride + threadIdx.x);
+  if (threadIdx.x < n - strideIdx * stride) processObject(strideIdx * stride + threadIdx.x);
     
   __syncthreads();
 
