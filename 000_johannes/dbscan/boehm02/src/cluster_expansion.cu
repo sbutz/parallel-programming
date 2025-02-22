@@ -205,7 +205,7 @@ static __device__ IdxType processPoints(
     } else if (pointIdx < endStep) {
       s_collisions[pointIdx - beginStep] = true;
     } else {
-      clusters[pointIdx] = myClusterId - pointIdx;
+      //clusters[pointIdx] = myClusterId - pointIdx;
     }
   };
 
@@ -216,20 +216,47 @@ static __device__ IdxType processPoints(
     float dx = xs[pointIdx] - x;
     float dy = ys[pointIdx] - y;
     bool isNeighbor = dx * dx + dy * dy <= rsq;
+    bool handleImmediately = isDefinitelyCore;
     if (isNeighbor) {
-      bool handleImmediately = isDefinitelyCore;
       if (!handleImmediately) {
         auto r = LargeStridePolicy::tryAppendToNeighborBuffer(s_neighborBuffer, s_neighborCount, coreThreshold, pointIdx);
         handleImmediately = !r.wasAppended;
         isDefinitelyCore = r.maxLengthReached;
       }
-      if (handleImmediately) markAsCandidate(pointIdx);
     }
+    return isNeighbor && handleImmediately;
   };
 
+  IdxType beginSecondPart = beginStep / stride;
+  IdxType beginThirdPart = (endStep - 1) / stride + 1;
+  IdxType endSecondPart = (n - 1) / stride;
+  IdxType endThirdPart = endSecondPart;
+  if (endSecondPart > beginThirdPart) endSecondPart = beginThirdPart;
+
   IdxType strideIdx = 0;
-  for (; strideIdx < (n - 1) / stride; ++strideIdx) processObject(strideIdx * stride + threadIdx.x);
-  if (threadIdx.x < n - strideIdx * stride) processObject(strideIdx * stride + threadIdx.x);
+  for (; strideIdx < beginSecondPart; ++strideIdx) {
+    IdxType pointIdx = strideIdx * stride + threadIdx.x;
+    if (processObject(pointIdx)) {
+      if (coreMarkers[pointIdx]) {
+        myClusterId = unionizeClusters(clusters, pointIdx, myClusterId);
+      } else {
+        clusters[pointIdx] = myClusterId - pointIdx;
+      }
+    }
+  }
+  for (; strideIdx < endSecondPart; ++strideIdx) {
+    IdxType pointIdx = strideIdx * stride + threadIdx.x;
+    if (processObject(strideIdx * stride + threadIdx.x)) markAsCandidate(pointIdx);
+  }
+  for (; strideIdx < endThirdPart && !isDefinitelyCore; ++strideIdx) {
+    IdxType pointIdx = strideIdx * stride + threadIdx.x;
+    if (processObject(pointIdx)) markAsCandidate(pointIdx);
+  }
+  strideIdx = endThirdPart;
+  if (threadIdx.x < n - strideIdx * stride && !isDefinitelyCore) {
+    IdxType pointIdx = strideIdx * stride + threadIdx.x;
+    if (processObject(strideIdx * stride + threadIdx.x)) markAsCandidate(pointIdx);
+  }
     
   __syncthreads();
 
