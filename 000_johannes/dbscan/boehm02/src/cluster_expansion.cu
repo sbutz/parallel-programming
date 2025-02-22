@@ -217,12 +217,10 @@ static __device__ IdxType processPoints(
     float dy = ys[pointIdx] - y;
     bool isNeighbor = dx * dx + dy * dy <= rsq;
     bool handleImmediately = isDefinitelyCore;
-    if (isNeighbor) {
-      if (!handleImmediately) {
-        auto r = LargeStridePolicy::tryAppendToNeighborBuffer(s_neighborBuffer, s_neighborCount, coreThreshold, pointIdx);
-        handleImmediately = !r.wasAppended;
-        isDefinitelyCore = r.maxLengthReached;
-      }
+    if (isNeighbor && !handleImmediately) {
+      auto r = LargeStridePolicy::tryAppendToNeighborBuffer(s_neighborBuffer, s_neighborCount, coreThreshold, pointIdx);
+      handleImmediately = !r.wasAppended;
+      isDefinitelyCore = r.maxLengthReached;
     }
     return isNeighbor && handleImmediately;
   };
