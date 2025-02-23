@@ -25,7 +25,7 @@ Args parseArgs(const int argc, const char* argv[])
 }
 
 std::tuple<std::vector<double>, std::size_t, std::size_t> parseCsv(const char *path) {
-    rapidcsv::Document doc(path);
+    rapidcsv::Document doc(path, rapidcsv::LabelParams(-1, -1));
     std::size_t rows = doc.GetRowCnt();
     std::size_t cols = doc.GetColumnCount();
     std::vector<double> data;
@@ -37,7 +37,7 @@ std::tuple<std::vector<double>, std::size_t, std::size_t> parseCsv(const char *p
     return {data, rows, cols};
 }
 
-void printDoubles(double* p, std::size_t n_points, std::size_t d_points)
+void printDoubles(const double* p, std::size_t n_points, std::size_t d_points)
 {
     for (std::size_t i = 0; i < n_points; ++i)
     {

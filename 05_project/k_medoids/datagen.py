@@ -5,7 +5,7 @@ from io import StringIO
 import numpy as np
 
 def main():
-    X, y = make_blobs(centers=3, cluster_std=0.5, random_state=0)
+    X, y = make_blobs(n_samples=3000, centers=5, cluster_std=0.5, random_state=0)
 
     f = StringIO()
     np.savetxt(f, X, fmt="%.18f", delimiter=",")
