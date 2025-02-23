@@ -13,4 +13,4 @@ struct Args
 
 Args parseArgs(const int argc, const char* argv[]);
 
-void printDoubles(double* p, std::size_t n_points, std::size_t d_points);
+void printDoubles(const double* p, std::size_t n_points, std::size_t d_points);

@@ -15,6 +15,10 @@ NVCC_LDFLAGS = -ccbin=g++  -lcuda -lcudart
 
 OBJDIR=./build
 
+$(OBJDIR)/%.o: %.cu
+	@mkdir -p $(OBJDIR)
+	$(NVCC) $(NVCC_FLAGS) -c -o $@ $<
+
 $(OBJDIR)/%.o: %.cpp
 	@mkdir -p $(OBJDIR)
 	$(NVCC) $(NVCC_FLAGS) -c -o $@ $<
@@ -22,17 +26,18 @@ $(OBJDIR)/%.o: %.cpp
 $(OBJDIR)/%: $(OBJDIR)/%.o $(OBJDIR)/args.o
 	$(NVCC) $(GENCODE_FLAGS) -o $@ $(NVCC_LDFLAGS) $^
 
-KERNELS = $(OBJDIR)/01_pam_cpu
+#KERNELS = $(OBJDIR)/01_pam_cpu $(OBJDIR)/01_pam
+KERNELS = $(OBJDIR)/01_pam
 
 all: $(KERNELS)
 
 #NVPROF=nsys profile --stats=true --output="./build/report%n"
+N_CLUSTERS=5
 run: $(KERNELS)
 	python3 datagen.py > $(OBJDIR)/data.csv
-	python3 medoids.py $(OBJDIR)/data.csv | sort > $(OBJDIR)/medoids.py.csv
+	python3 medoids.py $(N_CLUSTERS) $(OBJDIR)/data.csv | sort > $(OBJDIR)/medoids.py.csv
 	for kernel in $(KERNELS); do \
-		echo "Running $$kernel"; \
-		$(NVPROF) $$kernel 3 $(OBJDIR)/data.csv | sort > $(OBJDIR)/medoids.csv; \
+		$(NVPROF) $$kernel $(N_CLUSTERS) $(OBJDIR)/data.csv | sort > $(OBJDIR)/medoids.csv; \
 		diff $(OBJDIR)/medoids.py.csv $(OBJDIR)/medoids.csv; \
 		test $$? -eq 0 || exit 1; \
 	done
