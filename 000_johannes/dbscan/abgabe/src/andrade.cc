@@ -136,6 +136,8 @@ static auto runDbscan (
   CUDA_CHECK(cudaMemcpy(neighborCounts.data(), g1.d_neighborCounts, nDataPoints * sizeof(IdxType), cudaMemcpyDeviceToHost));
   for (std::size_t i = 0; i < nDataPoints; ++i) isCore[i] = !!neighborCounts[i];
 
+  freeDNeighborGraph(g1);
+  
 	CUDA_CHECK(cudaEventRecord(stop));
   CUDA_CHECK(cudaEventSynchronize(stop));
   CUDA_CHECK(cudaEventElapsedTime(&profile->timeTotal, start, stop));
