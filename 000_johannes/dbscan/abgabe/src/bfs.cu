@@ -265,29 +265,19 @@ static __global__ void kernel_markNonCore(
     }    
 }
 
-AllComponentsFinder::AllComponentsFinder(DNeighborGraph const * graph, std::size_t maxFrontierSize)
-: cf (graph, maxFrontierSize), nextFreeTag(2), nextStartIndex(0) {
-    CUDA_CHECK(cudaMalloc(&this->d_resultBuffer, 2 * sizeof(IdxType)))
-}
-
-
-AllComponentsFinder::~AllComponentsFinder() {
-    (void)cudaFree(this->d_resultBuffer);
-}
-
-std::vector<IdxType> AllComponentsFinder::getComponentTagsVector() const {
-    auto res = std::vector<IdxType> (this->cf.nVertices);
-    CUDA_CHECK(cudaMemcpy(res.data(), this->cf.d_visited, this->cf.nVertices * sizeof(IdxType), cudaMemcpyDeviceToHost))
+std::vector<IdxType> ComponentFinder::getComponentTagsVector() const {
+    auto res = std::vector<IdxType> (this->nVertices);
+    CUDA_CHECK(cudaMemcpy(res.data(), this->d_visited, this->nVertices * sizeof(IdxType), cudaMemcpyDeviceToHost))
     return res;
 }
 
-static void markNonCore(AllComponentsFinder * acf, DNeighborGraph const * graph) {
+static void markNonCore(ComponentFinder * cf, DNeighborGraph const * graph) {
     constexpr int threadsPerBlock = 128;
     kernel_markNonCore <<<
         dim3((graph->nVertices + threadsPerBlock - 1) / threadsPerBlock),
         dim3(threadsPerBlock)    
     >>> (
-        acf->cf.d_visited,
+        cf->d_visited,
         graph->d_startIndices,
         graph->nVertices
     );
@@ -535,35 +525,46 @@ struct FindNextUnvisitedPolicy<findNextUnivisitedSuccessiveMultWarpPolicy> {
 };
 
 
-
 template <int FindNextUnvisitedPolicyKey, int FrontierPolicyKey>
 void doFindAllComponents(
-    FindComponentsProfile * profile,
-    AllComponentsFinder * acf, DNeighborGraph const * graph,
-    void (*callback) (void *), void * callbackData
+  IdxType * d_resultBuffer, FindComponentsProfile * profile,
+  ComponentFinder & cf, DNeighborGraph const * graph, IdxType nextFreeTag, IdxType nextStartIdx, 
+  void (*callback) (void *), void * callbackData
 ) {
-    profile->timeMarkNonCore = runAndMeasureCuda(markNonCore, acf, graph);
+    profile->timeMarkNonCore = runAndMeasureCuda(markNonCore, &cf, graph);
     profile->timeFindComponents = runAndMeasureCuda([&]{
         IdxType nIterations = 0;
         IdxType startIdx = 1;
         for (;;) {
             auto nextUnvisited = FindNextUnvisitedPolicy<FindNextUnvisitedPolicyKey>::findNextUnvisited(
-                acf->d_resultBuffer, acf->cf.d_visited, graph->nVertices, startIdx
+                d_resultBuffer, cf.d_visited, graph->nVertices, startIdx
             );
             if (!nextUnvisited.wasFound) break;
-            acf->cf.findComponent<FrontierPolicyKey>(graph, nextUnvisited.idx, acf->nextFreeTag, callback, callbackData);
+            cf.findComponent<FrontierPolicyKey>(graph, nextUnvisited.idx, nextFreeTag, callback, callbackData);
             startIdx = nextUnvisited.idx + 1;
-            ++acf->nextFreeTag;
+            ++nextFreeTag;
             ++nIterations;
         }
     });
 }
 
+IdxType * createResultBuffer() {
+    IdxType * d_resultBuffer;
+    CUDA_CHECK(cudaMalloc(&d_resultBuffer, 2 * sizeof(IdxType)))
+    return d_resultBuffer;
+}
+
+void freeResultBuffer(IdxType * d_resultBuffer) {
+    (void)cudaFree(d_resultBuffer);
+}
+
+
 static void forceInstantiation() __attribute__ ((unused));
 static void forceInstantiation() {
-    doFindAllComponents<findNextUnivisitedNaivePolicy, frontierBasicPolicy> (nullptr, nullptr, nullptr, nullptr, nullptr);
-    doFindAllComponents<findNextUnivisitedSuccessivePolicy, frontierBasicPolicy> (nullptr, nullptr, nullptr, nullptr, nullptr);
-    doFindAllComponents<findNextUnivisitedSuccessiveMultWarpPolicy, frontierBasicPolicy> (nullptr, nullptr, nullptr, nullptr, nullptr);
-    doFindAllComponents<findNextUnivisitedSuccessiveSimplifiedPolicy, frontierBasicPolicy> (nullptr, nullptr, nullptr, nullptr, nullptr);
-    doFindAllComponents<findNextUnivisitedSuccessiveSimplifiedPolicy, frontierSharedPolicy> (nullptr, nullptr, nullptr, nullptr, nullptr);
+    auto && cf = ComponentFinder{nullptr, 0};
+    doFindAllComponents<findNextUnivisitedNaivePolicy, frontierBasicPolicy> (nullptr, nullptr, cf, nullptr, 0, 0, nullptr, nullptr);
+    doFindAllComponents<findNextUnivisitedSuccessivePolicy, frontierBasicPolicy> (nullptr, nullptr, cf, nullptr, 0, 0, nullptr, nullptr);
+    doFindAllComponents<findNextUnivisitedSuccessiveMultWarpPolicy, frontierBasicPolicy> (nullptr, nullptr, cf, nullptr, 0, 0, nullptr, nullptr);
+    doFindAllComponents<findNextUnivisitedSuccessiveSimplifiedPolicy, frontierBasicPolicy> (nullptr, nullptr, cf, nullptr, 0, 0, nullptr, nullptr);
+    doFindAllComponents<findNextUnivisitedSuccessiveSimplifiedPolicy, frontierSharedPolicy> (nullptr, nullptr, cf, nullptr, 0, 0, nullptr, nullptr);
 }

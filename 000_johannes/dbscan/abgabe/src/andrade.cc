@@ -134,9 +134,10 @@ static auto runDbscan (
   auto g1 = buildNeighborGraph(
     profile, points.d_x, points.d_y, points.n, coreThreshold, r
   );
-  AllComponentsFinder acf(&g1, g1.lenIncidenceAry);
-  acf.findAllComponents<findNextUnivisitedNaivePolicy, frontierBasicPolicy>(profile, &g1, []{});
-  auto tags = acf.getComponentTagsVector();
+  ComponentFinder cf {&g1, g1.lenIncidenceAry };
+  findAllComponents<findNextUnivisitedNaivePolicy, frontierBasicPolicy>(profile, &cf, &g1, []{});
+  auto tags = cf.getComponentTagsVector();
+
 
   std::vector<IdxType> neighborCounts (nDataPoints);
   std::vector<char> isCore (nDataPoints);

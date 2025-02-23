@@ -36,14 +36,13 @@ struct ComponentFinder {
       DNeighborGraph const * graph, IdxType startVertex, IdxType visitedTag,
       void (*callback) (void *) = nullptr, void * callbackData = nullptr
   );
+  std::vector<IdxType> getComponentTagsVector() const;
 };
-
-struct AllComponentsFinder;
 
 template <int FindNextUnvisitedPolicyKey, int FrontierPolicyKey>
 void doFindAllComponents(
-  FindComponentsProfile * profile,
-  AllComponentsFinder *, DNeighborGraph const *,
+  IdxType * d_resultBuffer, FindComponentsProfile * profile,
+  ComponentFinder & cf, DNeighborGraph const * graph, IdxType nextFreeTag, IdxType nextStartIdx, 
   void (*callback) (void *) = nullptr, void * callbackData = nullptr
 );
 
@@ -55,26 +54,18 @@ constexpr int findNextUnivisitedSuccessiveSimplifiedPolicy = 4;
 constexpr int frontierBasicPolicy = 1;
 constexpr int frontierSharedPolicy = 2;
 
-struct AllComponentsFinder {
-  ComponentFinder cf;
-  IdxType nextFreeTag;
-  IdxType nextStartIndex;
-  IdxType * d_resultBuffer;
 
-  AllComponentsFinder(DNeighborGraph const * graph, size_t maxFrontierSize);
-  AllComponentsFinder(AllComponentsFinder const &) = delete;
-  ~AllComponentsFinder();
+IdxType * createResultBuffer();
+void freeResultBuffer(IdxType * d_resultBuffer);
 
-  template <int FindNextUnvisitedPolicyKey, int FrontierPolicyKey, typename Callback>
-  void findAllComponents(FindComponentsProfile * profile, DNeighborGraph const * graph, Callback && callback = []{}) {
-    doFindAllComponents<FindNextUnvisitedPolicyKey, FrontierPolicyKey>(profile, this, graph,
-      [](void * callback) { (*(Callback *)callback) (); },
-      &callback
-    );
-  }
-
-  std::vector<IdxType> getComponentTagsVector() const;
-};
-
+template <int FindNextUnvisitedPolicyKey, int FrontierPolicyKey, typename Callback>
+inline void findAllComponents(FindComponentsProfile * profile, ComponentFinder * cf, DNeighborGraph const * graph, Callback && callback = []{}) {
+  IdxType * d_resultBuffer = createResultBuffer();
+  doFindAllComponents<FindNextUnvisitedPolicyKey, FrontierPolicyKey>(d_resultBuffer, profile, *cf, graph, 2, 0,
+    [](void * callback) { (*(Callback *)callback) (); },
+    &callback
+  );
+  freeResultBuffer(d_resultBuffer);
+}
 
 #endif
