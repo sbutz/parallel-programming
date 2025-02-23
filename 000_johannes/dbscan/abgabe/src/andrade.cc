@@ -17,7 +17,6 @@ struct Config {
   unsigned int n;
   float r;
   bool performWarmup;
-  bool checkGraph;
 };
 
 static void abortWithUsageMessage() {
@@ -42,9 +41,6 @@ static Config parseCommandLineArguments(int argc, char * argv []) {
 	  	switch (argstr[j]) {
         case 'w': {
           config.performWarmup = true;
-        } break;
-        case 'c': {
-          config.checkGraph = true;
         } break;
       }
     }
@@ -107,22 +103,12 @@ void jsonPrintUnsignedIntegerVector(std::vector<T> const & vec) {
 	printf(" ]");
 }
 
-struct DbscanProfile : BuildNeighborGraphProfile, FindComponentsProfile {
+struct DbscanProfilingData : BuildNeighborGraphProfilingData, FindComponentsProfilingData {
   float timeTotal;
 };
 
-static auto copyPointsToDevice(float const * x, float const * y, IdxType n) {
-  float * d_x, * d_y;
-  CUDA_CHECK(cudaMalloc(&d_x, n * sizeof(float)))
-  CUDA_CHECK(cudaMalloc(&d_y, n * sizeof(float)))
-  CUDA_CHECK(cudaMemcpy(d_x, x, n * sizeof(float), cudaMemcpyHostToDevice))
-  CUDA_CHECK(cudaMemcpy(d_y, y, n * sizeof(float), cudaMemcpyHostToDevice))
-  struct Result { float * d_x; float * d_y; IdxType n; };
-  return Result { d_x, d_y, n };
-}
-
 static auto runDbscan (
-  DbscanProfile * profile,
+  DbscanProfilingData * profile,
   float const * h_x, float const * h_y, IdxType nDataPoints,
   IdxType coreThreshold, float r
 ) {
@@ -130,17 +116,23 @@ static auto runDbscan (
 	cudaEvent_t stop; CUDA_CHECK(cudaEventCreate(&stop));
 	CUDA_CHECK(cudaEventRecord(start));
 
-  auto points = copyPointsToDevice(h_x, h_y, nDataPoints);
+  ManagedDeviceArray<float> d_x {nDataPoints};
+  ManagedDeviceArray<float> d_y {nDataPoints};
+  ManagedDeviceArray<IdxType> d_visited {nDataPoints};
+  CUDA_CHECK(cudaMemcpy(d_x.ptr(), h_x, nDataPoints * sizeof(float), cudaMemcpyHostToDevice))
+  CUDA_CHECK(cudaMemcpy(d_y.ptr(), h_y, nDataPoints * sizeof(float), cudaMemcpyHostToDevice))
   auto g1 = buildNeighborGraph(
-    profile, points.d_x, points.d_y, points.n, coreThreshold, r
+    profile, d_x.ptr(), d_y.ptr(), nDataPoints, coreThreshold, r
   );
-  ComponentFinder cf {&g1, g1.lenIncidenceAry };
-  findAllComponents<findNextUnivisitedNaivePolicy, frontierBasicPolicy>(profile, &cf, &g1, []{});
-  auto tags = cf.getComponentTagsVector();
 
+  findAllComponents<findNextUnvisitedSuccessivePolicy, frontierBasicPolicy>(d_visited.ptr(), profile, &g1);
 
+  auto clusters = std::vector<IdxType> (nDataPoints);
+  CUDA_CHECK(cudaMemcpy(clusters.data(), d_visited.ptr(), nDataPoints * sizeof(IdxType), cudaMemcpyDeviceToHost))
+  
   std::vector<IdxType> neighborCounts (nDataPoints);
   std::vector<char> isCore (nDataPoints);
+  static_assert(sizeof(bool) == 1, "");
   CUDA_CHECK(cudaMemcpy(neighborCounts.data(), g1.d_neighborCounts, nDataPoints * sizeof(IdxType), cudaMemcpyDeviceToHost));
   for (std::size_t i = 0; i < nDataPoints; ++i) isCore[i] = !!neighborCounts[i];
 
@@ -152,11 +144,11 @@ static auto runDbscan (
     std::vector<char> isCore;
     std::vector<IdxType> clusters;
   };
-  return Result { std::move(isCore), std::move(tags) };
+  return Result { std::move(isCore), std::move(clusters) };
 }
 
 int main (int argc, char * argv []) {
-  DbscanProfile profile = {};
+  DbscanProfilingData profile = {};
 
   Config config = parseCommandLineArguments(argc, argv);
 

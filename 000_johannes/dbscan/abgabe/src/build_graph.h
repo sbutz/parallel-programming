@@ -3,14 +3,14 @@
 
 #include "types.h"
 
-struct BuildNeighborGraphProfile {
+struct BuildNeighborGraphProfilingData {
   float timeNeighborCount;
   float timePrefixScan;
   float timeBuildIncidenceList;
 };
 
 DNeighborGraph buildNeighborGraph(
-  BuildNeighborGraphProfile * profile,
+  BuildNeighborGraphProfilingData * profile,
   float const * d_xs, float const * d_ys, IdxType n,
   IdxType coreThreshold, float r
 );

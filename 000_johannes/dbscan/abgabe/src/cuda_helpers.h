@@ -25,6 +25,24 @@ inline void gpuAssert(
 }
 
 // *****************************************************************************
+// Device-Speicher, der bei Verlassen des Scopes freigegeben wird
+// *****************************************************************************
+
+template <typename T>
+struct ManagedDeviceArray {
+  explicit ManagedDeviceArray (std::size_t n): n(n) {
+    CUDA_CHECK(cudaMalloc(&this->p, n * sizeof(T)))
+  }
+  ManagedDeviceArray (ManagedDeviceArray<T> const &) = delete;
+  ~ManagedDeviceArray () { if (this->p) (void)cudaFree(this->p); }
+  inline T * ptr () const { return this->p; }
+  inline std::size_t size() const { return this->n; }
+private:
+  T * p = nullptr;
+  std::size_t n = 0;
+};
+
+// *****************************************************************************
 // Template-Funktion zur Messung der Ausführungsdauer via Cuda-Events
 // *****************************************************************************
 
