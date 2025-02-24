@@ -1,7 +1,7 @@
 #ifndef BUILD_GRAPH_H_
 #define BUILD_GRAPH_H_
 
-#include "types.h"
+#include "a_types.h"
 
 struct BuildNeighborGraphProfilingData {
   float timeNeighborCount;

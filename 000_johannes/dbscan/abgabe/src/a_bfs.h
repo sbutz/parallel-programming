@@ -1,7 +1,7 @@
 #ifndef BFS_H_
 #define BFS_H_
 
-#include "types.h"
+#include "a_types.h"
 #include <cstddef>
 #include <vector>
 

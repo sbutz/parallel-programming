@@ -1,7 +1,8 @@
 #include "warmup.h"
-#include "types.h"
 #include "cuda_helpers.h"
 #include <cuda.h>
+
+using IdxType = unsigned int;
 
 static __global__ void kernel_prefixScanStep(
   IdxType * __restrict__ dest, IdxType * __restrict__ src, IdxType n, IdxType delta

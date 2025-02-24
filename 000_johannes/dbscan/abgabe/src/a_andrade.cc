@@ -1,8 +1,8 @@
-#include "build_graph.h"
-#include "bfs.h"
+#include "a_build_graph.h"
+#include "a_bfs.h"
 #include "warmup.h"
 
-#include "types.h"
+#include "a_types.h"
 #include <cstring>
 #include <iostream>
 #include <fstream>

@@ -1,5 +1,5 @@
-#include "build_graph.h"
-#include "types.h"
+#include "a_build_graph.h"
+#include "a_types.h"
 #include "cuda_helpers.h"
 #include <cuda.h>
 

@@ -19,10 +19,10 @@ NVIDIADIR=./nvidia
 
 all: $(OBJDIR)/andrade $(OBJDIR)/andrade_texture
 
-$(OBJDIR)/andrade: $(OBJDIR)/andrade.o $(OBJDIR)/warmup.o $(OBJDIR)/bfs.o $(OBJDIR)/build_graph.o
+$(OBJDIR)/andrade: $(OBJDIR)/a_andrade.o $(OBJDIR)/warmup.o $(OBJDIR)/a_bfs.o $(OBJDIR)/a_build_graph.o
 	$(NVCC) $(GENCODE_FLAGS) -o $@ $(NVCC_LDFLAGS) $^
 
-$(OBJDIR)/andrade_texture: $(OBJDIR)/andrade.o $(OBJDIR)/warmup.o $(OBJDIR)/bfs_texture.o $(OBJDIR)/build_graph.o
+$(OBJDIR)/andrade_texture: $(OBJDIR)/a_andrade.o $(OBJDIR)/warmup.o $(OBJDIR)/a_bfs_texture.o $(OBJDIR)/a_build_graph.o
 	$(NVCC) $(GENCODE_FLAGS) -o $@ $(NVCC_LDFLAGS) $^
 
 $(OBJDIR)/%.o: $(SRCDIR)/%.cu

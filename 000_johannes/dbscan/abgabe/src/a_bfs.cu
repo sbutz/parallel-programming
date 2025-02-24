@@ -1,4 +1,4 @@
-#include "bfs.incl.cu"
+#include "a_bfs.incl.cu"
 
 void findAllComponents(
     int nSm,
