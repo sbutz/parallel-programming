@@ -134,7 +134,7 @@ static auto runDbscan (
     profile, d_x.ptr(), d_y.ptr(), nDataPoints, coreThreshold, r
   );
 
-  findAllComponents<findNextUnvisitedSuccessivePolicy, frontierSharedPolicy>(nSm, d_visited.ptr(), profile, &g1);
+  findAllComponents(nSm, d_visited.ptr(), profile, &g1);
 
   auto clusters = std::vector<IdxType> (nDataPoints);
   CUDA_CHECK(cudaMemcpy(clusters.data(), d_visited.ptr(), nDataPoints * sizeof(IdxType), cudaMemcpyDeviceToHost))

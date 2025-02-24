@@ -9,6 +9,8 @@ constexpr int findNextUnvisitedSuccessivePolicy = 2;
 constexpr int findNextUnvisitedSuccessiveMultWarpPolicy = 3;
 constexpr int findNextUnvisitedSuccessiveSimplifiedPolicy = 4;
 
+constexpr int frontierBasicPolicy = 1;
+constexpr int frontierSharedPolicy = 2;
 constexpr int graphTexturePolicy = 3;
 
 // ******************************************************************************************************************************
@@ -44,8 +46,8 @@ struct FrontierData {
 template <int FrontierPolicyKey> struct FindComponent;
 
 // ******************************************************************************************************************************
-// FindComponent<graphTexturePolicy>, using
-//   kernel_bfs_texture: kernel relying on texture memory for incidence lists
+// FindComponent<frontierBasicPolicy>, using
+//   kernel_bfs: simple BFS kernel
 // ******************************************************************************************************************************
 
 static __device__ void appendToFrontier(IdxType * cntFrontier, IdxType * frontier, IdxType vertex) {
@@ -53,9 +55,7 @@ static __device__ void appendToFrontier(IdxType * cntFrontier, IdxType * frontie
     frontier[old] = vertex;
 }
 
-texture<IdxType, 1, cudaReadModeElementType> startIndicesTexture;
-
-static __global__ void kernel_bfs_texture(
+static __global__ void kernel_bfs(
     DNeighborGraph graph,
     unsigned int * d_visited,
     unsigned int visitedTag, // must be != 0
@@ -69,8 +69,8 @@ static __global__ void kernel_bfs_texture(
 
     auto processFrontierEntry = [&] (IdxType i) {
         IdxType vertex = frontier[i];
-        IdxType incidenceListStart = tex1D(startIndicesTexture, vertex);
-        IdxType incidenceListEnd = tex1D(startIndicesTexture, vertex + 1);
+        IdxType incidenceListStart = graph.d_startIndices[vertex];
+        IdxType incidenceListEnd = graph.d_startIndices[vertex+1];
 
         for (IdxType j = incidenceListStart; j < incidenceListEnd; ++j) {
             IdxType destination = graph.d_incidenceAry[j];
@@ -89,7 +89,7 @@ static __global__ void kernel_bfs_texture(
 }
 
 template <>
-struct FindComponent<graphTexturePolicy> {
+struct FindComponent<frontierBasicPolicy> {
     static void findComponent(
         int nSm,
         IdxType * d_visited,
@@ -106,7 +106,7 @@ struct FindComponent<graphTexturePolicy> {
         for (;;) {
             CUDA_CHECK(cudaMemset(fd->frontiers[!fd->currentFrontier].d_cntFrontier, 0, sizeof(IdxType)))
 
-            kernel_bfs_texture <<<nBlocks, nThreadsPerBlock>>> (
+            kernel_bfs <<<nBlocks, nThreadsPerBlock>>> (
                 *graph,
                 d_visited,
                 visitedTag,
@@ -114,6 +114,130 @@ struct FindComponent<graphTexturePolicy> {
                 fd->frontiers[fd->currentFrontier].d_frontier,
                 fd->frontiers[!fd->currentFrontier].d_cntFrontier,
                 fd->frontiers[!fd->currentFrontier].d_frontier
+            );
+
+            IdxType cntNewFrontier;
+            CUDA_CHECK(cudaMemcpy(
+                &cntNewFrontier, fd->frontiers[!fd->currentFrontier].d_cntFrontier, sizeof(IdxType),
+                cudaMemcpyDeviceToHost
+            ))
+            if (!cntNewFrontier) break;
+            fd->currentFrontier = !fd->currentFrontier;
+        }
+    }
+};
+
+// ******************************************************************************************************************************
+// FindComponent<frontierSharedPolicy>, using
+//   kernel_bfs_shared_frontier: BFS kernel which uses shared memory in building the frontier
+// ******************************************************************************************************************************
+
+static __device__ void appendToFrontierShared(
+    IdxType * cntSharedFrontier, IdxType * sharedFrontier, unsigned int sharedFrontierSize,
+    IdxType * cntFrontier, IdxType * frontier, IdxType vertex
+) {
+    if (*cntSharedFrontier < sharedFrontierSize) {
+        IdxType old = atomicAdd(cntSharedFrontier, 1);
+        sharedFrontier[old] = vertex;
+    } else {
+        IdxType old = atomicAdd(cntFrontier, 1);
+        frontier[old] = vertex;
+    }
+}
+
+static __device__ void copySharedToGlobalFrontier(
+    IdxType * startPos,
+    IdxType * cntSharedFrontier, IdxType * sharedFrontier, unsigned int sharedFrontierSize,
+    IdxType * cntGlobalFrontier, IdxType * globalFrontier
+) {
+    if (threadIdx.x == 0) *startPos = atomicAdd(cntGlobalFrontier, *cntSharedFrontier);
+    __syncthreads();
+    IdxType start = *startPos;
+    IdxType stride = blockDim.x;
+    for (IdxType i = threadIdx.x; i < sharedFrontierSize; i += stride) {
+        globalFrontier[start + i] = sharedFrontier[i];
+    }
+}
+
+static __global__ void kernel_bfs_shared_frontier(
+    DNeighborGraph graph,
+    unsigned int * d_visited,
+    unsigned int visitedTag, // must be != 0
+    IdxType * cntFrontier,
+    IdxType * frontier,
+    IdxType * cntNewFrontier,
+    IdxType * newFrontier,
+    unsigned int sharedFrontierSize
+) {
+    __shared__ IdxType cntSharedFrontier;
+    __shared__ IdxType startPos;
+    extern __shared__ IdxType sharedFrontier[];
+
+    unsigned int tid = blockDim.x * blockIdx.x + threadIdx.x;
+    unsigned int stride = blockDim.x * gridDim.x;
+
+    if (threadIdx.x == 0) cntSharedFrontier = 0;
+    __syncthreads();
+
+    auto processFrontierEntry = [&] (IdxType i) {
+        IdxType vertex = frontier[i];
+        IdxType incidenceListStart = graph.d_startIndices[vertex];
+        IdxType incidenceListEnd = graph.d_startIndices[vertex+1];
+
+        for (IdxType j = incidenceListStart; j < incidenceListEnd; ++j) {
+            IdxType destination = graph.d_incidenceAry[j];
+            unsigned int destinationVisited = d_visited[destination];
+            if(destinationVisited <= 1) {
+                d_visited[destination] = visitedTag;
+                if (destinationVisited == 0) appendToFrontierShared(
+                    &cntSharedFrontier, sharedFrontier, sharedFrontierSize,
+                    cntNewFrontier, newFrontier, destination
+                );
+            }
+        }
+    };
+
+    IdxType cnt = *cntFrontier;
+    IdxType strideBegin = 0;
+    if (cnt > stride) for (; strideBegin < cnt - stride; strideBegin += stride) processFrontierEntry(strideBegin + tid);
+    if (tid < cnt - strideBegin) processFrontierEntry(strideBegin + tid);
+
+    __syncthreads();
+
+    copySharedToGlobalFrontier(
+        &startPos,
+        &cntSharedFrontier, sharedFrontier, sharedFrontierSize,
+        cntNewFrontier, newFrontier
+    );
+}
+
+template <>
+struct FindComponent<frontierSharedPolicy> {
+    static void findComponent(
+        int nSm,
+        IdxType * d_visited,
+        FrontierData * fd,
+        DNeighborGraph const * graph, IdxType startVertex, IdxType visitedTag
+    ) {
+        int nBlocks = 2 * nSm;
+        unsigned int sharedFrontierSize = (1u << 13) / (nBlocks / nSm); // 8 * 1024 values -> 4 * 8 * 1024 Bytes = 32 kiB
+        constexpr int nThreadsPerBlock = 512;
+
+        IdxType startValues [2] = { 1, startVertex };
+
+        CUDA_CHECK(cudaMemcpy(fd->frontiers[fd->currentFrontier].d_cntFrontier, &startValues, 2 * sizeof(IdxType), cudaMemcpyHostToDevice))
+        CUDA_CHECK(cudaMemset(&d_visited[startVertex], visitedTag, sizeof(IdxType)))
+        for (;;) {
+            CUDA_CHECK(cudaMemset(fd->frontiers[!fd->currentFrontier].d_cntFrontier, 0, sizeof(IdxType)))
+            kernel_bfs_shared_frontier <<<nBlocks, nThreadsPerBlock, sharedFrontierSize * sizeof(IdxType)>>> (
+                *graph,
+                d_visited,
+                visitedTag,
+                fd->frontiers[fd->currentFrontier].d_cntFrontier,
+                fd->frontiers[fd->currentFrontier].d_frontier,
+                fd->frontiers[!fd->currentFrontier].d_cntFrontier,
+                fd->frontiers[!fd->currentFrontier].d_frontier,
+                sharedFrontierSize
             );
 
             IdxType cntNewFrontier;
@@ -402,7 +526,7 @@ auto FindNextUnvisited<findNextUnvisitedSuccessiveMultWarpPolicy>::findNextUnvis
 // findAllComponents: find all the clusters
 // ******************************************************************************************************************************
 
-template <int FindNextUnvisitedPolicyKey>
+template <int FindNextUnvisitedPolicyKey, int FrontierPolicyKey>
 static void findAllComponents(
     int nSm,
     IdxType * d_visited,
@@ -416,16 +540,6 @@ static void findAllComponents(
 
     CUDA_CHECK(cudaMemset(d_visited, 0, graph->nVertices * sizeof(IdxType)))
 
-    cudaArray * texArray = nullptr;
-    cudaChannelFormatDesc channelDesc = cudaCreateChannelDesc<IdxType> ();
-    CUDA_CHECK(cudaMallocArray(&texArray, &channelDesc, graph->nVertices + 1))
-    CUDA_CHECK(cudaMemcpy2DToArray(
-        texArray, 0, 0, graph->d_startIndices,
-        graph->nVertices + 1, graph->nVertices + 1, 1,
-        cudaMemcpyDeviceToDevice
-    ))
-    CUDA_CHECK(cudaBindTextureToArray(startIndicesTexture, texArray))
-
     profile->timeMarkNonCore = runAndMeasureCuda(markNonCore, d_visited, graph);
     profile->timeFindComponents = runAndMeasureCuda([&]{
         IdxType nIterations = 0;
@@ -435,19 +549,10 @@ static void findAllComponents(
                 d_resultBuffer.ptr(), d_visited, graph->nVertices, startIdx
             );
             if (!nextUnvisited.wasFound) break;
-            FindComponent<graphTexturePolicy>::findComponent(nSm, d_visited, &fd, graph, nextUnvisited.idx, nextFreeTag);
+            FindComponent<FrontierPolicyKey>::findComponent(nSm, d_visited, &fd, graph, nextUnvisited.idx, nextFreeTag);
             startIdx = nextUnvisited.idx + 1;
             ++nextFreeTag;
             ++nIterations;
         }
     });
-}
-
-void findAllComponents(
-    int nSm,
-    IdxType * d_visited,
-    FindComponentsProfilingData * profile,
-    DNeighborGraph const * graph
-) {
-    findAllComponents<findNextUnvisitedSuccessivePolicy>(nSm, d_visited, profile, graph);
 }
