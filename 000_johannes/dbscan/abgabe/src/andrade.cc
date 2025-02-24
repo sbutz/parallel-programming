@@ -107,11 +107,20 @@ struct DbscanProfilingData : BuildNeighborGraphProfilingData, FindComponentsProf
   float timeTotal;
 };
 
+// get number of multiprocessors on device
+static int getNSm() {
+  int nSm;
+  CUDA_CHECK(cudaDeviceGetAttribute(&nSm, cudaDevAttrMultiProcessorCount, 0));
+  return nSm;
+}
+
 static auto runDbscan (
   DbscanProfilingData * profile,
   float const * h_x, float const * h_y, IdxType nDataPoints,
   IdxType coreThreshold, float r
 ) {
+  int nSm = getNSm();
+
 	cudaEvent_t start; CUDA_CHECK(cudaEventCreate(&start));
 	cudaEvent_t stop; CUDA_CHECK(cudaEventCreate(&stop));
 	CUDA_CHECK(cudaEventRecord(start));
@@ -125,7 +134,7 @@ static auto runDbscan (
     profile, d_x.ptr(), d_y.ptr(), nDataPoints, coreThreshold, r
   );
 
-  findAllComponents<findNextUnvisitedSuccessivePolicy, frontierBasicPolicy>(d_visited.ptr(), profile, &g1);
+  findAllComponents<findNextUnvisitedSuccessivePolicy, frontierSharedPolicy>(nSm, d_visited.ptr(), profile, &g1);
 
   auto clusters = std::vector<IdxType> (nDataPoints);
   CUDA_CHECK(cudaMemcpy(clusters.data(), d_visited.ptr(), nDataPoints * sizeof(IdxType), cudaMemcpyDeviceToHost))

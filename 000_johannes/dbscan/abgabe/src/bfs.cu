@@ -4,6 +4,9 @@
 #include <cuda_runtime.h>
 #include <iostream>
 
+// 4 warps per block if the number of blocks is determined by the number of data points
+static constexpr unsigned int defaultNThreadsPerBlock = 128;
+
 // ********************************************************+*********************************************************************
 // Auxiliary data structure for BFS
 // ********************************************************+*********************************************************************
@@ -56,35 +59,39 @@ static __global__ void kernel_bfs(
     IdxType * newFrontier
 ) {
     unsigned int tid = blockDim.x * blockIdx.x + threadIdx.x;
-    IdxType stride = 1;
+    unsigned int stride = blockDim.x * gridDim.x;
 
-    for (IdxType i = tid * stride; i < tid * stride + 1; ++i) {
-        if (i < *cntFrontier) {
-            IdxType vertex = frontier[i];
-            IdxType incidenceListStart = graph.d_startIndices[vertex];
-            IdxType incidenceListEnd = graph.d_startIndices[vertex+1];
+    auto processFrontierEntry = [&] (IdxType i) {
+        IdxType vertex = frontier[i];
+        IdxType incidenceListStart = graph.d_startIndices[vertex];
+        IdxType incidenceListEnd = graph.d_startIndices[vertex+1];
 
-            for (IdxType j = incidenceListStart; j < incidenceListEnd; ++j) {
-                IdxType destination = graph.d_incidenceAry[j];
-                unsigned int destinationVisited = d_visited[destination];
-                if(destinationVisited <= 1) {
-                    d_visited[destination] = visitedTag;
-                    if (destinationVisited == 0) appendToFrontier(cntNewFrontier, newFrontier, destination);
-                }
+        for (IdxType j = incidenceListStart; j < incidenceListEnd; ++j) {
+            IdxType destination = graph.d_incidenceAry[j];
+            unsigned int destinationVisited = d_visited[destination];
+            if(destinationVisited <= 1) {
+                d_visited[destination] = visitedTag;
+                if (destinationVisited == 0) appendToFrontier(cntNewFrontier, newFrontier, destination);
             }
-
         }
-    }
+    };
+
+    IdxType cnt = *cntFrontier;
+    IdxType strideBegin = 0;
+    if (cnt > stride) for (; strideBegin < cnt - stride; strideBegin += stride) processFrontierEntry(strideBegin + tid);
+    if (tid < cnt - strideBegin) processFrontierEntry(strideBegin + tid);
 }
 
 template <>
 struct FindComponent<frontierBasicPolicy> {
     static void findComponent(
+        int nSm,
         IdxType * d_visited,
         FrontierData * fd,
         DNeighborGraph const * graph, IdxType startVertex, IdxType visitedTag
     ) {
-        constexpr int threadsPerBlock = 128;
+        int nBlocks = 16 * nSm;
+        constexpr int nThreadsPerBlock = 128;
         IdxType startValues [2] = { 1, startVertex };
 
         CUDA_CHECK(cudaMemcpy(fd->frontiers[fd->currentFrontier].d_cntFrontier, &startValues[0], 2 * sizeof(IdxType), cudaMemcpyHostToDevice))
@@ -93,10 +100,7 @@ struct FindComponent<frontierBasicPolicy> {
         for (;;) {
             CUDA_CHECK(cudaMemset(fd->frontiers[!fd->currentFrontier].d_cntFrontier, 0, sizeof(IdxType)))
 
-            kernel_bfs <<<
-                dim3((graph->nVertices + threadsPerBlock - 1) / threadsPerBlock),
-                dim3(threadsPerBlock)
-            >>> (
+            kernel_bfs <<<nBlocks, nThreadsPerBlock>>> (
                 *graph,
                 d_visited,
                 visitedTag,
@@ -122,10 +126,8 @@ struct FindComponent<frontierBasicPolicy> {
 //   kernel_bfs_shared_frontier: BFS kernel which uses shared memory in building the frontier
 // ********************************************************+*********************************************************************
 
-static constexpr IdxType sharedFrontierSize = 1u << 13; // 8 * 1024 values -> 4 * 8 * 1024 Bytes = 32 kiB
-
 static __device__ void appendToFrontierShared(
-    IdxType * cntSharedFrontier, IdxType * sharedFrontier,
+    IdxType * cntSharedFrontier, IdxType * sharedFrontier, unsigned int sharedFrontierSize,
     IdxType * cntFrontier, IdxType * frontier, IdxType vertex
 ) {
     if (*cntSharedFrontier < sharedFrontierSize) {
@@ -139,7 +141,7 @@ static __device__ void appendToFrontierShared(
 
 static __device__ void copySharedToGlobalFrontier(
     IdxType * startPos,
-    IdxType * cntSharedFrontier, IdxType * sharedFrontier,
+    IdxType * cntSharedFrontier, IdxType * sharedFrontier, unsigned int sharedFrontierSize,
     IdxType * cntGlobalFrontier, IdxType * globalFrontier
 ) {
     if (threadIdx.x == 0) *startPos = atomicAdd(cntGlobalFrontier, *cntSharedFrontier);
@@ -158,43 +160,47 @@ static __global__ void kernel_bfs_shared_frontier(
     IdxType * cntFrontier,
     IdxType * frontier,
     IdxType * cntNewFrontier,
-    IdxType * newFrontier
+    IdxType * newFrontier,
+    unsigned int sharedFrontierSize
 ) {
     __shared__ IdxType cntSharedFrontier;
     __shared__ IdxType startPos;
-    __shared__ IdxType sharedFrontier[sharedFrontierSize];
+    extern __shared__ IdxType sharedFrontier[];
 
     unsigned int tid = blockDim.x * blockIdx.x + threadIdx.x;
-    IdxType stride = 1;
+    unsigned int stride = blockDim.x * gridDim.x;
 
     if (threadIdx.x == 0) cntSharedFrontier = 0;
     __syncthreads();
 
-    for (IdxType i = tid * stride; i < tid * stride + 1; ++i) {
-        if (i < *cntFrontier) {
-            IdxType vertex = frontier[i];
-            IdxType incidenceListStart = graph.d_startIndices[vertex];
-            IdxType incidenceListEnd = graph.d_startIndices[vertex+1];
+    auto processFrontierEntry = [&] (IdxType i) {
+        IdxType vertex = frontier[i];
+        IdxType incidenceListStart = graph.d_startIndices[vertex];
+        IdxType incidenceListEnd = graph.d_startIndices[vertex+1];
 
-            for (IdxType j = incidenceListStart; j < incidenceListEnd; ++j) {
-                IdxType destination = graph.d_incidenceAry[j];
-                unsigned int destinationVisited = d_visited[destination];
-                if(destinationVisited <= 1) {
-                    d_visited[destination] = visitedTag;
-                    if (destinationVisited == 0) appendToFrontierShared(
-                        &cntSharedFrontier, sharedFrontier,
-                        cntNewFrontier, newFrontier, destination
-                    );
-                }
+        for (IdxType j = incidenceListStart; j < incidenceListEnd; ++j) {
+            IdxType destination = graph.d_incidenceAry[j];
+            unsigned int destinationVisited = d_visited[destination];
+            if(destinationVisited <= 1) {
+                d_visited[destination] = visitedTag;
+                if (destinationVisited == 0) appendToFrontierShared(
+                    &cntSharedFrontier, sharedFrontier, sharedFrontierSize,
+                    cntNewFrontier, newFrontier, destination
+                );
             }
         }
-    }
+    };
+
+    IdxType cnt = *cntFrontier;
+    IdxType strideBegin = 0;
+    if (cnt > stride) for (; strideBegin < cnt - stride; strideBegin += stride) processFrontierEntry(strideBegin + tid);
+    if (tid < cnt - strideBegin) processFrontierEntry(strideBegin + tid);
 
     __syncthreads();
 
     copySharedToGlobalFrontier(
         &startPos,
-        &cntSharedFrontier, sharedFrontier,
+        &cntSharedFrontier, sharedFrontier, sharedFrontierSize,
         cntNewFrontier, newFrontier
     );
 }
@@ -202,30 +208,31 @@ static __global__ void kernel_bfs_shared_frontier(
 template <>
 struct FindComponent<frontierSharedPolicy> {
     static void findComponent(
+        int nSm,
         IdxType * d_visited,
         FrontierData * fd,
         DNeighborGraph const * graph, IdxType startVertex, IdxType visitedTag
     ) {
-        constexpr int threadsPerBlock = 128;
+        int nBlocks = 2 * nSm;
+        unsigned int sharedFrontierSize = (1u << 13) / (nBlocks / nSm); // 8 * 1024 values -> 4 * 8 * 1024 Bytes = 32 kiB
+        constexpr int nThreadsPerBlock = 512;
+
         IdxType startValues [2] = { 1, startVertex };
 
         CUDA_CHECK(cudaMemcpy(fd->frontiers[fd->currentFrontier].d_cntFrontier, &startValues, 2 * sizeof(IdxType), cudaMemcpyHostToDevice))
         CUDA_CHECK(cudaMemset(&d_visited[startVertex], visitedTag, sizeof(IdxType)))
         for (;;) {
             CUDA_CHECK(cudaMemset(fd->frontiers[!fd->currentFrontier].d_cntFrontier, 0, sizeof(IdxType)))
-            kernel_bfs_shared_frontier <<<
-                dim3((graph->nVertices + threadsPerBlock - 1) / threadsPerBlock),
-                dim3(threadsPerBlock)
-            >>> (
+            kernel_bfs_shared_frontier <<<nBlocks, nThreadsPerBlock, sharedFrontierSize * sizeof(IdxType)>>> (
                 *graph,
                 d_visited,
                 visitedTag,
                 fd->frontiers[fd->currentFrontier].d_cntFrontier,
                 fd->frontiers[fd->currentFrontier].d_frontier,
                 fd->frontiers[!fd->currentFrontier].d_cntFrontier,
-                fd->frontiers[!fd->currentFrontier].d_frontier
+                fd->frontiers[!fd->currentFrontier].d_frontier,
+                sharedFrontierSize
             );
-            cudaDeviceSynchronize();
 
             IdxType cntNewFrontier;
             CUDA_CHECK(cudaMemcpy(
@@ -257,10 +264,10 @@ static __global__ void kernel_markNonCore(
 }
 
 static void markNonCore(IdxType * d_visited, DNeighborGraph const * graph) {
-    constexpr int threadsPerBlock = 128;
+    constexpr int nThreadsPerBlock = 128;
     kernel_markNonCore <<<
-        dim3((graph->nVertices + threadsPerBlock - 1) / threadsPerBlock),
-        dim3(threadsPerBlock)    
+        dim3((graph->nVertices + nThreadsPerBlock - 1) / nThreadsPerBlock),
+        dim3(nThreadsPerBlock)    
     >>> (
         d_visited,
         graph->d_startIndices,
@@ -311,14 +318,13 @@ template <>
 auto FindNextUnvisited<findNextUnvisitedNaivePolicy>::findNextUnvisited(
     IdxType * d_resultBuffer, IdxType * d_visited, IdxType nVertices, IdxType startIdx
 ) -> FindNextUnvisited<findNextUnvisitedNaivePolicy>::Result {
-    constexpr int threadsPerBlock = 128;
+    constexpr int nThreadsPerBlock = 128;
     CUDA_CHECK(cudaMemset(d_resultBuffer, 0, 2 * sizeof(IdxType)))
 
     kernel_findUnvisitedNaive <<<
-        dim3((nVertices + threadsPerBlock - 1) / threadsPerBlock),
-        dim3(threadsPerBlock)
+        (nVertices + nThreadsPerBlock - 1) / nThreadsPerBlock,
+        nThreadsPerBlock
     >>> (d_resultBuffer, d_visited, nVertices, startIdx);
-    cudaDeviceSynchronize();
 
     IdxType localBuffer [2];
     CUDA_CHECK(cudaMemcpy(localBuffer, d_resultBuffer, 2 * sizeof(IdxType), cudaMemcpyDeviceToHost))
@@ -368,15 +374,14 @@ template <>
 auto FindNextUnvisited<findNextUnvisitedSuccessivePolicy>::findNextUnvisited(
     IdxType * d_resultBuffer, IdxType * d_visited, IdxType nVertices, IdxType startIdx
 ) -> FindNextUnvisited<findNextUnvisitedSuccessivePolicy>::Result {
-    constexpr int threadsPerBlock = 32;
+    constexpr int nThreadsPerBlock = 32;
     constexpr int blocks = 1;
     constexpr IdxType maxIdxType = (IdxType)0 - (IdxType)1;
 
     IdxType localBuffer;
     kernel_findUnvisitedSuccessive <<<
-        dim3(blocks), dim3(threadsPerBlock)
+        blocks, nThreadsPerBlock
     >>> (d_resultBuffer, d_visited, nVertices, startIdx);
-    cudaDeviceSynchronize();
 
     CUDA_CHECK(cudaMemcpy(&localBuffer, d_resultBuffer, sizeof(IdxType), cudaMemcpyDeviceToHost))
 
@@ -411,7 +416,7 @@ template <>
 auto FindNextUnvisited<findNextUnvisitedSuccessiveSimplifiedPolicy>::findNextUnvisited(
     IdxType * d_resultBuffer, IdxType * d_visited, IdxType nVertices, IdxType startIdx
 ) -> FindNextUnvisited<findNextUnvisitedSuccessiveSimplifiedPolicy>::Result {
-    constexpr int threadsPerBlock = 32;
+    constexpr int nThreadsPerBlock = 32;
     constexpr int blocks = 1;
     constexpr IdxType maxIdxType = (IdxType)0 - (IdxType)1;
 
@@ -419,9 +424,8 @@ auto FindNextUnvisited<findNextUnvisitedSuccessiveSimplifiedPolicy>::findNextUnv
 
     IdxType localBuffer;
     kernel_findUnvisitedSuccessiveSimplified <<<
-        dim3(blocks), dim3(threadsPerBlock)
+        blocks, nThreadsPerBlock
     >>> (d_resultBuffer, d_visited, nVertices, startIdx);
-    cudaDeviceSynchronize();
 
     CUDA_CHECK(cudaMemcpy(&localBuffer, d_resultBuffer, sizeof(IdxType), cudaMemcpyDeviceToHost))
 
@@ -493,16 +497,15 @@ template <>
 auto FindNextUnvisited<findNextUnvisitedSuccessiveMultWarpPolicy>::findNextUnvisited(
     IdxType * d_resultBuffer, IdxType * d_visited, IdxType nVertices, IdxType startIdx
 ) -> FindNextUnvisited<findNextUnvisitedSuccessiveMultWarpPolicy>::Result {
-    constexpr int threadsPerBlock = 2 * 32;
+    constexpr int nThreadsPerBlock = 2 * 32;
     constexpr int blocks = 1;
     constexpr IdxType maxIdxType = (IdxType)0 - (IdxType)1;
 
     IdxType localBuffer;
     kernel_findUnvisitedSuccessiveMultWarp <<<
-        dim3(blocks), dim3(threadsPerBlock)
+        dim3(blocks), dim3(nThreadsPerBlock)
     >>> (d_resultBuffer, d_visited, nVertices, startIdx);
     CUDA_CHECK(cudaGetLastError())
-    cudaDeviceSynchronize();
 
     CUDA_CHECK(cudaMemcpy(&localBuffer, d_resultBuffer, sizeof(IdxType), cudaMemcpyDeviceToHost))
 
@@ -519,6 +522,7 @@ auto FindNextUnvisited<findNextUnvisitedSuccessiveMultWarpPolicy>::findNextUnvis
 
 template <int FindNextUnvisitedPolicyKey, int FrontierPolicyKey>
 void findAllComponents(
+    int nSm,
     IdxType * d_visited,
     FindComponentsProfilingData * profile,
     DNeighborGraph const * graph
@@ -539,7 +543,7 @@ void findAllComponents(
                 d_resultBuffer.ptr(), d_visited, graph->nVertices, startIdx
             );
             if (!nextUnvisited.wasFound) break;
-            FindComponent<FrontierPolicyKey>::findComponent(d_visited, &fd, graph, nextUnvisited.idx, nextFreeTag);
+            FindComponent<FrontierPolicyKey>::findComponent(nSm, d_visited, &fd, graph, nextUnvisited.idx, nextFreeTag);
             startIdx = nextUnvisited.idx + 1;
             ++nextFreeTag;
             ++nIterations;
@@ -549,9 +553,10 @@ void findAllComponents(
 
 static void forceInstantiation() __attribute__ ((unused));
 static void forceInstantiation() {
-    findAllComponents<findNextUnvisitedNaivePolicy, frontierBasicPolicy> (nullptr, nullptr, nullptr);
-    findAllComponents<findNextUnvisitedSuccessivePolicy, frontierBasicPolicy> (nullptr, nullptr, nullptr);
-    findAllComponents<findNextUnvisitedSuccessiveMultWarpPolicy, frontierBasicPolicy> (nullptr, nullptr, nullptr);
-    findAllComponents<findNextUnvisitedSuccessiveSimplifiedPolicy, frontierBasicPolicy> (nullptr, nullptr, nullptr);
-    findAllComponents<findNextUnvisitedSuccessiveSimplifiedPolicy, frontierSharedPolicy> (nullptr, nullptr, nullptr);
+    findAllComponents<findNextUnvisitedNaivePolicy, frontierBasicPolicy> (0, nullptr, nullptr, nullptr);
+    findAllComponents<findNextUnvisitedSuccessivePolicy, frontierBasicPolicy> (0, nullptr, nullptr, nullptr);
+    findAllComponents<findNextUnvisitedSuccessivePolicy, frontierSharedPolicy> (0, nullptr, nullptr, nullptr);
+    findAllComponents<findNextUnvisitedSuccessiveMultWarpPolicy, frontierBasicPolicy> (0, nullptr, nullptr, nullptr);
+    findAllComponents<findNextUnvisitedSuccessiveSimplifiedPolicy, frontierBasicPolicy> (0, nullptr, nullptr, nullptr);
+    findAllComponents<findNextUnvisitedSuccessiveSimplifiedPolicy, frontierSharedPolicy> (0, nullptr, nullptr, nullptr);
 }

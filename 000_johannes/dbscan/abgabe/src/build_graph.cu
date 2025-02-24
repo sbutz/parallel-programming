@@ -3,9 +3,12 @@
 #include "cuda_helpers.h"
 #include <cuda.h>
 
-// ********************************************************+*********************************************************************
+// 4 warps per block if the number of blocks is determined by the number of data points
+static constexpr unsigned int defaultNThreadsPerBlock = 128;
+
+// ******************************************************************************************************************************
 // Neighbor counting
-// ********************************************************+*********************************************************************
+// ******************************************************************************************************************************
 
 // Kernel counts the number of neighboring points including the point itself.
 // If this number is >= coreThresholds, the number MINUS 1 is stored the array given by parameter counts.
@@ -39,14 +42,14 @@ void countNeighbors(
   float const * d_xs, float const * d_ys, IdxType n,
   IdxType coreThreshold, float r
 ) {
-  constexpr unsigned int nThreadsPerBlock = 256;
+  constexpr unsigned int nThreadsPerBlock = defaultNThreadsPerBlock;
   unsigned int nBlocks = (n + nThreadsPerBlock - 1) / nThreadsPerBlock;
   kernel_countNeighbors <<<nBlocks, nThreadsPerBlock>>> (d_counts, d_xs, d_ys, n, coreThreshold, r);
 }
 
-// ********************************************************+*********************************************************************
+// ******************************************************************************************************************************
 // Prefix Scan
-// ********************************************************+*********************************************************************
+// ******************************************************************************************************************************
 
 static __global__ void kernel_prefixScanStep(
   IdxType * __restrict__ dest, IdxType * __restrict__ src, IdxType n, IdxType delta
@@ -74,12 +77,12 @@ static __global__ void kernel_prefixScanStep(
   }
 }
 
-static void prefixScanOnDevice(IdxType ** res, IdxType * dest1, IdxType * dest2, IdxType * src, IdxType n) {
+static void prefixScan(IdxType ** res, IdxType * dest1, IdxType * dest2, IdxType * src, IdxType n) {
   using std::swap;
 
   if (n == 0) { *res = dest1; return; }
 
-  constexpr unsigned int nThreadsPerBlock = 256;
+  constexpr unsigned int nThreadsPerBlock = defaultNThreadsPerBlock;
   unsigned int nBlocks = (n + nThreadsPerBlock - 1) / nThreadsPerBlock;
 
   kernel_prefixScanStep <<<nBlocks, nThreadsPerBlock>>> (dest1, src, n, 1);
@@ -92,9 +95,9 @@ static void prefixScanOnDevice(IdxType ** res, IdxType * dest1, IdxType * dest2,
   *res = dest1;
 }
 
-// ********************************************************+*********************************************************************
+// ******************************************************************************************************************************
 // Building the incidence lists
-// ********************************************************+*********************************************************************
+// ******************************************************************************************************************************
 
 static __global__ void kernel_buildIncidenceLists (
   IdxType * __restrict__ listArray,
@@ -130,19 +133,19 @@ static __global__ void kernel_buildIncidenceLists (
     buildIncidenceListForPoint(cumulative[strideBegin + tid], cumulative[strideBegin + tid + 1], strideBegin + tid);
 }
 
-static void buildIncidenceListsOnDevice(
+static void buildIncidenceLists(
   IdxType * d_listArray,
   float const * d_xs, float const * d_ys, IdxType const * d_cumulative, IdxType n,
   float r
 ) {
-  constexpr unsigned int nThreadsPerBlock = 256;
+  constexpr unsigned int nThreadsPerBlock = defaultNThreadsPerBlock;
   unsigned int nBlocks = (n + nThreadsPerBlock - 1) / nThreadsPerBlock;
   kernel_buildIncidenceLists <<<nBlocks, nThreadsPerBlock>>> (d_listArray, d_xs, d_ys, d_cumulative, n, r);
 }
 
-// ********************************************************+*********************************************************************
+// ******************************************************************************************************************************
 // Graph construction and graph memory deallocation
-// ********************************************************+*********************************************************************
+// ******************************************************************************************************************************
 
 DNeighborGraph buildNeighborGraph(
   BuildNeighborGraphProfilingData * profile,
@@ -162,7 +165,7 @@ DNeighborGraph buildNeighborGraph(
   IdxType * d_dest1 = d_temp, * d_dest2 = d_dest1 + n;
   IdxType * s;
   profile->timePrefixScan = runAndMeasureCuda(
-    prefixScanOnDevice,
+    prefixScan,
     &s,
     d_dest1,
     d_dest2,
@@ -182,7 +185,7 @@ DNeighborGraph buildNeighborGraph(
   IdxType * d_incidenceAry;
   CUDA_CHECK(cudaMalloc(&d_incidenceAry, lenIncidenceAry * sizeof(IdxType)))
   profile->timeBuildIncidenceList = runAndMeasureCuda(
-    buildIncidenceListsOnDevice,
+    buildIncidenceLists,
     d_incidenceAry, d_xs, d_ys, d_startIndices, n, r
   );
 

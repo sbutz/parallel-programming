@@ -12,6 +12,7 @@ struct FindComponentsProfilingData {
 
 template <int FindNextUnvisitedPolicyKey, int FrontierPolicyKey>
 void findAllComponents(
+  int nSm,
   IdxType * d_visited,
   FindComponentsProfilingData * profile,
   DNeighborGraph const * graph
