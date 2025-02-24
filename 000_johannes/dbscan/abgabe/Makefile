@@ -17,9 +17,12 @@ SRCDIR=./src
 OBJDIR=./bin
 NVIDIADIR=./nvidia
 
-all: $(OBJDIR)/andrade
+all: $(OBJDIR)/andrade $(OBJDIR)/andrade_texture
 
 $(OBJDIR)/andrade: $(OBJDIR)/andrade.o $(OBJDIR)/warmup.o $(OBJDIR)/bfs.o $(OBJDIR)/build_graph.o
+	$(NVCC) $(GENCODE_FLAGS) -o $@ $(NVCC_LDFLAGS) $^
+
+$(OBJDIR)/andrade_texture: $(OBJDIR)/andrade.o $(OBJDIR)/warmup.o $(OBJDIR)/bfs_texture.o $(OBJDIR)/build_graph.o
 	$(NVCC) $(GENCODE_FLAGS) -o $@ $(NVCC_LDFLAGS) $^
 
 $(OBJDIR)/%.o: $(SRCDIR)/%.cu

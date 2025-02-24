@@ -25,6 +25,7 @@ constexpr int findNextUnvisitedSuccessiveSimplifiedPolicy = 4;
 
 constexpr int frontierBasicPolicy = 1;
 constexpr int frontierSharedPolicy = 2;
+constexpr int graphTexturePolicy = 3;
 
 
 
