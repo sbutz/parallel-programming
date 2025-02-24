@@ -125,9 +125,9 @@ static auto runDbscan (
 	cudaEvent_t stop; CUDA_CHECK(cudaEventCreate(&stop));
 	CUDA_CHECK(cudaEventRecord(start));
 
-  ManagedDeviceArray<float> d_x {nDataPoints};
-  ManagedDeviceArray<float> d_y {nDataPoints};
-  ManagedDeviceArray<IdxType> d_visited {nDataPoints};
+  auto && d_x = ManagedDeviceArray<float> (nDataPoints);
+  auto && d_y = ManagedDeviceArray<float> (nDataPoints);
+  auto && d_visited = ManagedDeviceArray<IdxType> (nDataPoints);
   CUDA_CHECK(cudaMemcpy(d_x.ptr(), h_x, nDataPoints * sizeof(float), cudaMemcpyHostToDevice))
   CUDA_CHECK(cudaMemcpy(d_y.ptr(), h_y, nDataPoints * sizeof(float), cudaMemcpyHostToDevice))
   auto g1 = buildNeighborGraph(
@@ -140,7 +140,7 @@ static auto runDbscan (
   CUDA_CHECK(cudaMemcpy(clusters.data(), d_visited.ptr(), nDataPoints * sizeof(IdxType), cudaMemcpyDeviceToHost))
   
   std::vector<IdxType> neighborCounts (nDataPoints);
-  std::vector<char> isCore (nDataPoints);
+  std::vector<signed char> isCore (nDataPoints);
   static_assert(sizeof(bool) == 1, "");
   CUDA_CHECK(cudaMemcpy(neighborCounts.data(), g1.d_neighborCounts, nDataPoints * sizeof(IdxType), cudaMemcpyDeviceToHost));
   for (std::size_t i = 0; i < nDataPoints; ++i) isCore[i] = !!neighborCounts[i];
@@ -152,7 +152,7 @@ static auto runDbscan (
   CUDA_CHECK(cudaEventElapsedTime(&profile->timeTotal, start, stop));
 
   struct Result {
-    std::vector<char> isCore;
+    std::vector<signed char> isCore;
     std::vector<IdxType> clusters;
   };
   return Result { std::move(isCore), std::move(clusters) };
@@ -168,6 +168,10 @@ int main (int argc, char * argv []) {
   readInputFile(a, b, config.inputFilePath);
 
   auto nDataPoints = a.size();
+  if (!nDataPoints) {
+    std::cerr << "Error: Cannot cluster 0 data points.\n";
+    return 1;
+  }
   if (config.performWarmup) warmup();
 
   auto res = runDbscan(&profile, a.data(), b.data(), nDataPoints, config.n, config.r);

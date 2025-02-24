@@ -6,15 +6,6 @@
 #include <cuda.h>
 #include <vector>
 
-DPoints copyPointsToDevice(float const * x, float const * y, IdxType n) {
-  float * d_x, * d_y;
-  CUDA_CHECK(cudaMalloc(&d_x, n * sizeof(float)))
-  CUDA_CHECK(cudaMalloc(&d_y, n * sizeof(float)))
-  CUDA_CHECK(cudaMemcpy(d_x, x, n * sizeof(float), cudaMemcpyHostToDevice))
-  CUDA_CHECK(cudaMemcpy(d_y, y, n * sizeof(float), cudaMemcpyHostToDevice))
-  return { n, d_x, d_y };
-}
-
 static __device__ IdxType unionizeClusters(
   IdxType * clusters,
   IdxType cluster1,
@@ -58,32 +49,30 @@ static __device__ __forceinline__ unsigned int laneId() {
   return ret;
 }
 
-struct LargeStridePolicy {
-  static __device__ auto tryAppendToNeighborBuffer(
-    IdxType * s_neighborBuffer,
-    IdxType * s_neighborCount,
-    IdxType maxLength,
-    IdxType pointIdx
-  ) {
-    int lane = laneId(); // or threadIdx.x & 0x1f
-    unsigned int neighborMask = __ballot_sync(__activemask(), 1);
-    int leader = __ffs(neighborMask) - 1;
-    int nNeighbors = __popc(neighborMask);
-    int oldNeighborCount;
-    if (lane == leader) oldNeighborCount = atomicAdd(s_neighborCount, nNeighbors);
-    oldNeighborCount = __shfl_sync(neighborMask, oldNeighborCount, leader);
-    int h = oldNeighborCount + __popc(neighborMask & ((1u << lane) - 1));
+static __device__ auto tryAppendToNeighborBuffer(
+  IdxType * s_neighborBuffer,
+  IdxType * s_neighborCount,
+  IdxType maxLength,
+  IdxType pointIdx
+) {
+  int lane = laneId(); // or threadIdx.x & 0x1f
+  unsigned int neighborMask = __ballot_sync(__activemask(), 1);
+  int leader = __ffs(neighborMask) - 1;
+  int nNeighbors = __popc(neighborMask);
+  int oldNeighborCount;
+  if (lane == leader) oldNeighborCount = atomicAdd(s_neighborCount, nNeighbors);
+  oldNeighborCount = __shfl_sync(neighborMask, oldNeighborCount, leader);
+  int h = oldNeighborCount + __popc(neighborMask & ((1u << lane) - 1));
 
-    bool shouldAppend = h < maxLength;
-    if (shouldAppend) s_neighborBuffer[h] = pointIdx;
+  bool shouldAppend = h < maxLength;
+  if (shouldAppend) s_neighborBuffer[h] = pointIdx;
 
-    struct Result {
-      bool wasAppended;
-      bool maxLengthReached;
-    }; 
-    return Result { shouldAppend, oldNeighborCount + nNeighbors >= maxLength };
-  }
-};
+  struct Result {
+    bool wasAppended;
+    bool maxLengthReached;
+  }; 
+  return Result { shouldAppend, oldNeighborCount + nNeighbors >= maxLength };
+}
 
 static constexpr __host__ __device__ __forceinline__ IdxType dhi_max(IdxType a, IdxType b) {
   return a > b ? a : b;
@@ -211,7 +200,7 @@ static __device__ IdxType processPoints(
     if (isNeighbor) {
       bool handleImmediately = isDefinitelyCore;
       if (!handleImmediately) {
-        auto r = LargeStridePolicy::tryAppendToNeighborBuffer(s_neighborBuffer, s_neighborCount, coreThreshold, pointIdx);
+        auto r = tryAppendToNeighborBuffer(s_neighborBuffer, s_neighborCount, coreThreshold, pointIdx);
         handleImmediately = !r.wasAppended;
         isDefinitelyCore = r.maxLengthReached;
       }
@@ -234,7 +223,7 @@ static __device__ IdxType processPoints(
   return myClusterId;
 }
 
-static __device__ void writeCollisions(
+static __device__ void writeCollisionsToGlobalMemory(
   unsigned int * collisionMatrix,
   bool * s_collisions,
   IdxType nThreadGroupsTotal
@@ -350,44 +339,7 @@ static __global__ void kernel_clusterExpansion(
 
   __syncthreads();
 
-  writeCollisions(collisionMatrix, s_collisions, nThreadGroupsTotal);
-}
-
-void allocateDeviceMemory(
-  bool ** d_coreMarkers, IdxType ** d_clusters,
-  unsigned int ** d_collisionMatrix,
-  int nThreadGroups,
-  IdxType n
-) {
-  CUDA_CHECK(cudaMalloc(d_coreMarkers, n * sizeof(bool)))
-  // TODO: Change later
-  CUDA_CHECK(cudaMemset(*d_coreMarkers, 0, n * sizeof(bool)))
-  CUDA_CHECK(cudaMalloc(d_clusters, n * sizeof(IdxType)))
-  // TODO: Change later
-  CUDA_CHECK(cudaMemset(*d_clusters, 0, n * sizeof(IdxType)))
-
-  unsigned int collisionPitch = (nThreadGroups + 31) / 32;
-  CUDA_CHECK(cudaMalloc(d_collisionMatrix, collisionPitch * nThreadGroups * sizeof(unsigned int)))
-}
-
-
-void unionizeCpu(std::vector<IdxType> & clusters) {
-  std::vector<IdxType> stack;
-  for (IdxType i = 0; i < clusters.size(); ++i) {
-    IdxType child = i;
-    IdxType parentOffset = clusters[child];
-    if (parentOffset == 0) continue; // noise
-    do {
-      stack.push_back(child);
-      child = child + parentOffset;
-      parentOffset = clusters[child];
-    } while (parentOffset);
-    IdxType top = child;
-    while (stack.size() > 0) {
-      IdxType current = stack.back(); stack.pop_back();
-      clusters[current] = top - current;
-    }
-  }
+  writeCollisionsToGlobalMemory(collisionMatrix, s_collisions, nThreadGroupsTotal);
 }
 
 static __global__ void kernel_unionize(IdxType * clusters, IdxType n) {
@@ -421,52 +373,83 @@ static __global__ void kernel_unionize(IdxType * clusters, IdxType n) {
   if (tid < n - strideBegin) doWork();
 }
 
+static inline auto determineCEBlockGeometry(
+  unsigned int nCEBlocks, unsigned int nCEThreadsPerBlock, IdxType coreThreshold
+) {
+  constexpr int maxSharedBytesPerBlock = 47000;
+  unsigned int nCEThreadGroupsPerBlock = 32;
+  unsigned int requiredSharedBytes, nCEThreadGroupsTotal, strideCE;
+  for (;;) {
+    nCEThreadGroupsTotal = nCEBlocks * nCEThreadGroupsPerBlock;
+    strideCE = nCEThreadsPerBlock / nCEThreadGroupsPerBlock;
+    requiredSharedBytes = nCEThreadGroupsPerBlock * 4 * (
+      (nCEThreadGroupsTotal + 3) / 4 +
+      dhi_max(coreThreshold, (strideCE + 31) / 32) +
+      1
+    );
+    if (requiredSharedBytes <= maxSharedBytesPerBlock) break;
+    nCEThreadGroupsPerBlock >>= 1;
+    if (!nCEThreadGroupsPerBlock) {
+      fprintf(
+        stderr, "coreThreshold too large.\n"
+      );
+      exit (1);
+    }
+  }
+  struct Result {
+    unsigned int nCEThreadGroupsPerBlock;
+    unsigned int nCEThreadGroupsTotal;
+    unsigned int requiredSharedBytes;
+  };
+  return Result { nCEThreadGroupsPerBlock, nCEThreadGroupsTotal, requiredSharedBytes };
+}
+
 void findClusters(
-  bool ** d_coreMarkers, IdxType ** d_clusters,
+  int nSm,
+  bool * d_coreMarkers, IdxType * d_clusters,
   float * xs, float * ys, IdxType n,
   IdxType coreThreshold, float rsq
 ) {
-  constexpr int nBlocks = 6;
-  constexpr int nThreadGroupsPerBlock = 32;
-  constexpr int nThreadsPerBlock = 1024;
+  // for cluster expansion
+  unsigned int nCEBlocks = nSm;
+  unsigned int nCEThreadsPerBlock = 1024;
+  auto blockGeom = determineCEBlockGeometry(nCEBlocks, nCEThreadsPerBlock, coreThreshold);
+  unsigned int nCEThreadGroupsPerBlock = blockGeom.nCEThreadGroupsPerBlock;
+  unsigned int nCEThreadGroupsTotal = blockGeom.nCEThreadGroupsTotal;
+  unsigned int sharedBytesPerBlock = blockGeom.requiredSharedBytes;
 
-  int nThreadGroupsTotal = nBlocks * nThreadGroupsPerBlock;
+  // for collision handling
+  unsigned int nCHThreads = nCEThreadGroupsTotal * nCEThreadGroupsTotal;
+  unsigned int nCHThreadsPerBlock = 128;
+  unsigned int nCHBlocks = (nCHThreads + nCHThreadsPerBlock - 1) / nCHThreadsPerBlock;
 
-  unsigned int sharedBytesPerBlock = nThreadGroupsPerBlock * 4 * (
-    (nThreadGroupsTotal + 3) / 4 +
-    dhi_max(coreThreshold, (nThreadGroupsPerBlock + 31) / 32) +
-    1
+  // for unionize
+  unsigned int nUThreadsPerBlock = 128;
+  unsigned int nUBlocks = std::min(
+    16 * static_cast<unsigned int> (nSm), (n + nUThreadsPerBlock - 1) / nUThreadsPerBlock
   );
+  
+  unsigned int collisionPitch = (nCEThreadGroupsTotal + 31) / 32;
+  auto && d_collisionMatrix = ManagedDeviceArray<unsigned int> (collisionPitch * nCEThreadGroupsTotal);
 
-  unsigned int * d_collisionMatrix;
-  allocateDeviceMemory(d_coreMarkers, d_clusters, &d_collisionMatrix, nThreadGroupsTotal, n);
+  CUDA_CHECK(cudaMemset(d_coreMarkers, 0, n * sizeof(bool)))
+  CUDA_CHECK(cudaMemset(d_clusters, 0, n * sizeof(IdxType)))
 
   IdxType startPos = 0;
   for (;;) {
-    kernel_clusterExpansion <<<dim3(1, nBlocks), dim3(nThreadsPerBlock / nThreadGroupsPerBlock, nThreadGroupsPerBlock), sharedBytesPerBlock >>> (
-      *d_clusters, *d_coreMarkers, xs, ys, n, startPos, d_collisionMatrix, coreThreshold, rsq
+    kernel_clusterExpansion <<<
+      dim3(1, nCEBlocks),
+      dim3(nCEThreadsPerBlock / nCEThreadGroupsPerBlock, nCEThreadGroupsPerBlock),
+      sharedBytesPerBlock
+    >>> (
+      d_clusters, d_coreMarkers, xs, ys, n, startPos, d_collisionMatrix.ptr(), coreThreshold, rsq
     );
-    unsigned int nCHThreads = nThreadGroupsTotal * nThreadGroupsTotal;
-    unsigned int nCHThreadsPerBlock = 128;
-    unsigned int nCHBlocks = (nCHThreads + nCHThreadsPerBlock - 1) / nCHThreadsPerBlock;
     kernel_handleCollisions <<<nCHBlocks, nCHThreadsPerBlock>>> (
-      d_collisionMatrix, *d_clusters, *d_coreMarkers, n, startPos, nThreadGroupsTotal
+      d_collisionMatrix.ptr(), d_clusters, d_coreMarkers, n, startPos, nCEThreadGroupsTotal
     );
-
-    //CUDA_CHECK(cudaDeviceSynchronize())
-
-    if (n - startPos <= nThreadGroupsTotal) break;
-    startPos += nThreadGroupsTotal;
+    if (n - startPos <= nCEThreadGroupsTotal) break;
+    startPos += nCEThreadGroupsTotal;
   }
-  kernel_unionize <<<nBlocks, nThreadsPerBlock>>> (*d_clusters, n);
+  kernel_unionize <<<nUBlocks, nUThreadsPerBlock>>> (d_clusters, n);
   CUDA_CHECK(cudaGetLastError())
-}
-
-void unionizeGpu(IdxType * d_clusters, IdxType n) {
-  constexpr unsigned int nBlocks = 6;
-  constexpr unsigned int nThreadsPerBlock = 1024;
-
-  kernel_unionize <<<dim3(nBlocks), dim3(nThreadsPerBlock)>>> (d_clusters, n);
-  CUDA_CHECK(cudaGetLastError())
-  CUDA_CHECK(cudaDeviceSynchronize())
 }
