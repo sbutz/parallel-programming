@@ -17,12 +17,18 @@ SRCDIR=./src
 OBJDIR=./bin
 NVIDIADIR=./nvidia
 
-all: $(OBJDIR)/andrade $(OBJDIR)/andrade_texture
+all: $(OBJDIR)/andrade $(OBJDIR)/andrade_texture $(OBJDIR)/boehm $(OBJDIR)/fastboehm
 
 $(OBJDIR)/andrade: $(OBJDIR)/a_andrade.o $(OBJDIR)/warmup.o $(OBJDIR)/a_bfs.o $(OBJDIR)/a_build_graph.o
 	$(NVCC) $(GENCODE_FLAGS) -o $@ $(NVCC_LDFLAGS) $^
 
 $(OBJDIR)/andrade_texture: $(OBJDIR)/a_andrade.o $(OBJDIR)/warmup.o $(OBJDIR)/a_bfs_texture.o $(OBJDIR)/a_build_graph.o
+	$(NVCC) $(GENCODE_FLAGS) -o $@ $(NVCC_LDFLAGS) $^
+
+$(OBJDIR)/boehm: $(OBJDIR)/b_boehm.o $(OBJDIR)/warmup.o $(OBJDIR)/b_cluster_expansion.o
+	$(NVCC) $(GENCODE_FLAGS) -o $@ $(NVCC_LDFLAGS) $^
+
+$(OBJDIR)/fastboehm: $(OBJDIR)/c_boehm.o $(OBJDIR)/warmup.o $(OBJDIR)/c_cluster_expansion.o
 	$(NVCC) $(GENCODE_FLAGS) -o $@ $(NVCC_LDFLAGS) $^
 
 $(OBJDIR)/%.o: $(SRCDIR)/%.cu
