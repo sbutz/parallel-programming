@@ -43,9 +43,6 @@ static Config parseCommandLineArguments(int argc, char * argv []) {
         case 'w': {
           config.performWarmup = true;
         } break;
-        case 'c': {
-          config.checkGraph = true;
-        } break;
       }
     }
   }

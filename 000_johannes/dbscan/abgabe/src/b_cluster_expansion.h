@@ -4,15 +4,6 @@
 #include "b_types.h"
 #include <cstddef>
 
-struct DPoints {
-  IdxType n;
-  float * d_x;
-  float * d_y;
-};
-
-DPoints copyPointsToDevice(float const * x, float const * y, IdxType n);
-
-
 struct CollisionHandlingData {
   unsigned int * d_mutex;
   volatile IdxType * d_doneWithIdx;

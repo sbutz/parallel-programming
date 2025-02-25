@@ -226,7 +226,7 @@ struct FindComponent<frontierSharedPolicy> {
         IdxType startValues [2] = { 1, startVertex };
 
         CUDA_CHECK(cudaMemcpy(fd->frontiers[fd->currentFrontier].d_cntFrontier, &startValues, 2 * sizeof(IdxType), cudaMemcpyHostToDevice))
-        CUDA_CHECK(cudaMemset(&d_visited[startVertex], visitedTag, sizeof(IdxType)))
+        CUDA_CHECK(cudaMemcpy(&d_visited[startVertex], &visitedTag, sizeof(IdxType), cudaMemcpyHostToDevice))
         for (;;) {
             CUDA_CHECK(cudaMemset(fd->frontiers[!fd->currentFrontier].d_cntFrontier, 0, sizeof(IdxType)))
             kernel_bfs_shared_frontier <<<nBlocks, nThreadsPerBlock, sharedFrontierSize * sizeof(IdxType)>>> (

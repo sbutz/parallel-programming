@@ -5,15 +5,6 @@
 #include <iostream>
 #include <cuda.h>
 
-DPoints copyPointsToDevice(float const * x, float const * y, IdxType n) {
-  float * d_x, * d_y;
-  CUDA_CHECK(cudaMalloc(&d_x, n * sizeof(float)))
-  CUDA_CHECK(cudaMalloc(&d_y, n * sizeof(float)))
-  CUDA_CHECK(cudaMemcpy(d_x, x, n * sizeof(float), cudaMemcpyHostToDevice))
-  CUDA_CHECK(cudaMemcpy(d_y, y, n * sizeof(float), cudaMemcpyHostToDevice))
-  return { n, d_x, d_y };
-}
-
 constexpr IdxType maxSeedLength = 1024; // TODO: Could be larger!?
 
 
@@ -285,10 +276,8 @@ void allocateDeviceMemory(
   IdxType n
 ) {
   CUDA_CHECK(cudaMalloc(d_pointStates, n * sizeof(unsigned int)))
-  // TODO: Change later
   CUDA_CHECK(cudaMemset(*d_pointStates, 0, n * sizeof(unsigned int)))
   CUDA_CHECK(cudaMalloc(d_clusters, n * sizeof(IdxType)))
-  // TODO: Change later
   CUDA_CHECK(cudaMemset(*d_clusters, 0, n * sizeof(IdxType)))
 
   CUDA_CHECK(cudaMalloc(d_seedLists, nBlocks * maxSeedLength * sizeof(IdxType)))
@@ -298,13 +287,10 @@ void allocateDeviceMemory(
   CUDA_CHECK(cudaMalloc(d_syncCounter, sizeof(unsigned int)))
 
   auto chdSizes = CollisionHandlingData::calculateSizes(nBlocks);
-  unsigned int chdTotalSize = chdSizes.szMutex + chdSizes.szDoneWithIdx + chdSizes.szCollisionMatrix;
-  char * d_memCollisionData;
-  CUDA_CHECK(cudaMalloc(&d_memCollisionData, chdTotalSize))
-  collisionHandlingData->d_mutex = (unsigned int *)d_memCollisionData;
-  CUDA_CHECK(cudaMemset(collisionHandlingData->d_mutex, 0, sizeof(unsigned int)))
-  collisionHandlingData->d_doneWithIdx = (IdxType *)(d_memCollisionData + chdSizes.szMutex);
-  collisionHandlingData->d_collisionMatrix = (bool *)(d_memCollisionData + chdSizes.szMutex + chdSizes.szDoneWithIdx);
+  CUDA_CHECK(cudaMalloc(&collisionHandlingData->d_mutex, sizeof(unsigned int)))
+  CUDA_CHECK(cudaMalloc(&collisionHandlingData->d_doneWithIdx, chdSizes.szDoneWithIdx))
+  CUDA_CHECK(cudaMalloc(&collisionHandlingData->d_collisionMatrix, chdSizes.szCollisionMatrix))
+
   CUDA_CHECK(cudaMalloc(d_processedIdxs, nBlocks * sizeof(IdxType)))
 }
 
@@ -361,11 +347,11 @@ void findClusters(
         stillWork = true;
       } else if (startPos != (IdxType)-1) {
         IdxType foundAt = (IdxType)-1;
-        kernel_refillSeed <<<dim3(1), dim3(32)>>> (d_foundAt, d_seedLists, d_seedClusterIds, d_seedLengths, k, d_pointStates, d_clusters, n, startPos);
+        kernel_refillSeed <<<1, 32>>> (
+          d_foundAt, d_seedLists, d_seedClusterIds, d_seedLengths, k, d_pointStates, d_clusters, n, startPos
+        );
         CUDA_CHECK(cudaGetLastError())
         CUDA_CHECK(cudaMemcpy(&foundAt, d_foundAt, sizeof(IdxType), cudaMemcpyDeviceToHost))
-        CUDA_CHECK(cudaDeviceSynchronize())
-        // std::cerr << "Refilled " << k << " " << foundAt << "\n";
         startPos = foundAt + (foundAt != (IdxType)-1);
         stillWork = stillWork || foundAt != (IdxType)-1;
       }

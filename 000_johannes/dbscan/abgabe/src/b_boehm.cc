@@ -9,61 +9,7 @@
 #include <cuda_runtime.h>
 #include "cuda_helpers.h"
 
-char const * usageText = "Usage: andrade input_file n r\n";
-
-template <typename L1>
-void dumpList(L1 const & lst, std::size_t around) {
-  constexpr std::size_t maxEl = 10;
-
-  auto sz = lst.size();
-  std::size_t s, e;
-  if (sz <= maxEl) {
-    s = 0; e = sz;
-  } else if (around + 2 >= sz) {
-    e = sz; s = e - maxEl;
-  } else if (around < maxEl / 2) {
-    s = 0; e = maxEl;
-  } else {
-    s = around - maxEl / 2; e = s + maxEl;
-  }
-
-  std::cerr << "[Length: " << sz << "] ";
-  auto first = true;
-  if (s > 0) std::cerr << "... ";
-
-  for (std::size_t i = 0; i < e; ++i) {
-    if (!first) std::cerr << " ";
-    first = false;
-    if (i == around) {
-      std::cerr << "*" << lst[i] << "*";
-    } else {
-      std::cerr << lst[i];
-    }
-  }
-
-  if (e < sz) std::cerr << " ...";
-  std::cerr << '\n';
-}
-
-template <typename L1, typename L2>
-bool checkListEquality(char const * info, L1 const & l1, L2 const & l2) {
-  auto s1 = l1.size();
-  auto s2 = l2.size();
-  if (s1 != s2) {
-    std::cerr << "[" << info << "] Lengths not equal (" << s1 << " vs. " << s2 << ")\n";
-    return false;
-  }
-  for (std::size_t i = 0; i < s1; ++i) {
-    if (l1[i] != l2[i]) {
-      std::cerr << "[" << info << "] Elements at position " << i << " not equal.\n";
-      dumpList(l1, i);
-      dumpList(l2, i);
-      return false;
-    }
-  }
-  return true;
-}
-
+char const * usageText = "Usage: b_boehm input_file n r [w]\n";
 
 struct Config {
   char const * inputFilePath;
@@ -96,9 +42,6 @@ static Config parseCommandLineArguments(int argc, char * argv []) {
 	  	switch (argstr[j]) {
         case 'w': {
           config.performWarmup = true;
-        } break;
-        case 'c': {
-          config.checkGraph = true;
         } break;
       }
     }
@@ -145,45 +88,20 @@ void jsonPrintFloatAry(float * ary, size_t n) {
 	printf(" ]");
 }
 
-void jsonPrintIdxTypeAry(IdxType * ary, size_t n) {
-	constexpr char const * formatStr = sizeof(IdxType) == 4? "%u" : "%lu";
+template <typename T>
+void jsonPrintUnsignedIntegerVector(std::vector<T> const & vec) {
+  auto n = vec.size();
 	printf("[ ");
 	if (n > 0) {
 		size_t i = 0;
 		for (;;) {
-			printf(formatStr, ary[i]);
+			printf("%lu", static_cast<std::uint64_t> (vec[i]));
 			++i;
 			if (i == n) break;
 			printf(", ");
 		}
 	}
 	printf(" ]");
-}
-
-
-void jsonPrintStateAry(IdxType * ary, size_t n) {
-  auto verbalizeState = [](unsigned int state) {
-    std::string s = {};
-    if (state & stateUnderInspection) s += "[under inspection]";
-    if (state & stateNoiseOrBorder) s += "[noise or border]";
-    if (state & stateCore) s += "[core]";
-    if (state & stateReserved) s += "[reserved]";
-    if (state & stateReserved2) s += "[reserved2]";
-    return s;
-  };
-	printf("[ ");
-	if (n > 0) {
-		size_t i = 0;
-		for (;;) {
-			std::cout << "\"" << verbalizeState(ary[i]) << "\"";
-			++i;
-			if (i == n) break;
-			printf(", ");
-		}
-	}
-	printf(" ]");
-
-
 }
 
 struct DbscanProfile {
@@ -199,7 +117,8 @@ static auto runDbscan (
 	cudaEvent_t stop; CUDA_CHECK(cudaEventCreate(&stop));
 	CUDA_CHECK(cudaEventRecord(start));
 
-  auto points = copyPointsToDevice(h_x, h_y, nDataPoints);
+  auto && d_x = ManagedDeviceArray<float> (nDataPoints);
+  auto && d_y = ManagedDeviceArray<float> (nDataPoints);
 
   unsigned int * d_pointStates;
   IdxType * d_clusters;
@@ -213,26 +132,33 @@ static auto runDbscan (
 
   allocateDeviceMemory(&d_pointStates, &d_clusters, &d_seedLists, &d_seedLengths, &d_seedClusterIds, &d_syncCounter, &collisionHandlingData, &d_processedIdxs, nBlocks, nDataPoints);
 
+  CUDA_CHECK(cudaMemcpy(d_x.ptr(), h_x, nDataPoints * sizeof(float), cudaMemcpyHostToDevice))
+  CUDA_CHECK(cudaMemcpy(d_y.ptr(), h_y, nDataPoints * sizeof(float), cudaMemcpyHostToDevice))
+
   findClusters(
-    d_pointStates, d_clusters, points.d_x, points.d_y, points.n, d_seedLists, d_seedClusterIds, d_seedLengths, d_syncCounter, collisionHandlingData, d_processedIdxs, coreThreshold, r * r
+    d_pointStates, d_clusters, d_x.ptr(), d_y.ptr(), nDataPoints,
+    d_seedLists, d_seedClusterIds, d_seedLengths, d_syncCounter,
+    collisionHandlingData, d_processedIdxs, coreThreshold, r * r
   );
 
-  std::vector<unsigned int> states(points.n);
-  CUDA_CHECK(cudaMemcpy(states.data(), d_pointStates, points.n * sizeof(unsigned int), cudaMemcpyDeviceToHost))
+  std::vector<unsigned int> states(nDataPoints);
+  CUDA_CHECK(cudaMemcpy(states.data(), d_pointStates, nDataPoints * sizeof(unsigned int), cudaMemcpyDeviceToHost))
 
-  std::vector<IdxType> clusters(points.n);
-  CUDA_CHECK(cudaMemcpy(clusters.data(), d_clusters, points.n * sizeof(IdxType), cudaMemcpyDeviceToHost))
+  std::vector<signed char> isCore(nDataPoints); // avoid vector<bool>
+  for (std::size_t i = 0; i < nDataPoints; ++i) isCore[i] = (states[i] & stateCore) != 0;
+
+  std::vector<IdxType> clusters(nDataPoints);
+  CUDA_CHECK(cudaMemcpy(clusters.data(), d_clusters, nDataPoints * sizeof(IdxType), cudaMemcpyDeviceToHost))
 
 	CUDA_CHECK(cudaEventRecord(stop));
   CUDA_CHECK(cudaEventSynchronize(stop));
   CUDA_CHECK(cudaEventElapsedTime(&profile->timeTotal, start, stop));
 
   struct Result {
-//    DNeighborGraph g1;
-    std::vector<unsigned int> states;
+    std::vector<signed char> isCore;
     std::vector<IdxType> clusters;
   };
-  return Result { std::move(states), std::move(clusters) };
+  return Result { std::move(isCore), std::move(clusters) };
 }
 
 int main (int argc, char * argv []) {
@@ -253,28 +179,14 @@ int main (int argc, char * argv []) {
 
   auto res = runDbscan(&profile, a.data(), b.data(), nDataPoints, config.n, config.r);
 
-/*
-  auto verbalizeState = [](unsigned int state) {
-    std::string s = {};
-    if (state & stateUnderInspection) s += "[under inspection]";
-    if (state & stateNoiseOrBorder) s += "[noise or border]";
-    if (state & stateCore) s += "[core]";
-    if (state & stateReserved) s += "[reserved]";
-    return s;
-  };
-  for (int i = 0; i < 20; ++i) {
-    std::cerr << verbalizeState(res.states[i]) << " " << res.clusters[i] << "\n";
-  }
-*/
-
   // print JSON output
   std::cout << "{\n";
     std::cout << "\"output\": {\n";
       std::cout << "\"x\": "; jsonPrintFloatAry(a.data(), a.size()); std::cout << ",\n";
       std::cout << "\"y\": "; jsonPrintFloatAry(b.data(), b.size()); std::cout << ",\n";
-      std::cout << "\"state\": "; jsonPrintStateAry(res.states.data(), res.states.size()); std::cout << ",\n";
-      std::cout << "\"cluster_id\": "; jsonPrintIdxTypeAry(res.clusters.data(), res.clusters.size()); std::cout << "\n";
-    std::cout << "},\n";
+      std::cout << "\"is_core\": "; jsonPrintUnsignedIntegerVector(res.isCore); std::cout << ",\n";
+      std::cout << "\"cluster_id\": "; jsonPrintUnsignedIntegerVector(res.clusters); std::cout << "\n";
+     std::cout << "},\n";
     std::cout << "\"profile\": {\n";
       std::cout << "\"timeTotal\": " << profile.timeTotal << "\n";      
     std::cout << "}\n";
