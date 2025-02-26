@@ -17,7 +17,10 @@ SRCDIR=./src
 OBJDIR=./bin
 NVIDIADIR=./nvidia
 
-all: $(OBJDIR)/a_andrade $(OBJDIR)/a_andrade_texture $(OBJDIR)/b_boehm $(OBJDIR)/c_boehm
+all: $(OBJDIR)/deviceQuery $(OBJDIR)/a_andrade $(OBJDIR)/a_andrade_texture $(OBJDIR)/b_boehm $(OBJDIR)/c_boehm
+
+$(OBJDIR)/deviceQuery: $(OBJDIR)/deviceQuery.o
+	$(NVCC) $(GENCODE_FLAGS) -o $@ $(NVCC_LDFLAGS) $^
 
 $(OBJDIR)/a_andrade: $(OBJDIR)/a_andrade.o $(OBJDIR)/warmup.o $(OBJDIR)/a_bfs.o $(OBJDIR)/a_build_graph.o
 	$(NVCC) $(GENCODE_FLAGS) -o $@ $(NVCC_LDFLAGS) $^
@@ -30,6 +33,10 @@ $(OBJDIR)/b_boehm: $(OBJDIR)/b_boehm.o $(OBJDIR)/warmup.o $(OBJDIR)/b_cluster_ex
 
 $(OBJDIR)/c_boehm: $(OBJDIR)/c_boehm.o $(OBJDIR)/warmup.o $(OBJDIR)/c_cluster_expansion.o
 	$(NVCC) $(GENCODE_FLAGS) -o $@ $(NVCC_LDFLAGS) $^
+
+$(OBJDIR)/deviceQuery.o: nvidia/deviceQuery.cu
+	@mkdir -p $(OBJDIR)
+	$(NVCC) $(NVCC_FLAGS) -c -o $@ $<
 
 $(OBJDIR)/%.o: $(SRCDIR)/%.cu
 	@mkdir -p $(OBJDIR)

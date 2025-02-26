@@ -543,7 +543,7 @@ static void findAllComponents(
     profile->timeMarkNonCore = runAndMeasureCuda(markNonCore, d_visited, graph);
     profile->timeFindComponents = runAndMeasureCuda([&]{
         IdxType nIterations = 0;
-        IdxType startIdx = 1;
+        IdxType startIdx = 0;
         for (;;) {
             auto nextUnvisited = FindNextUnvisited<FindNextUnvisitedPolicyKey>::findNextUnvisited(
                 d_resultBuffer.ptr(), d_visited, graph->nVertices, startIdx

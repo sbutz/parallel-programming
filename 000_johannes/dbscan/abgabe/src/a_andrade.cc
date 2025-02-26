@@ -56,7 +56,7 @@ static void readFloats(std::istream & strm, F && handle) {
 }
 
 static void readInput(std::istream & strm, std::vector<float> & x, std::vector<float> & y) {
-    auto storeFloats = [&x, &y, c = false] (float v) mutable { (c ? x : y).push_back(v); c = !c; };
+    auto storeFloats = [&x, &y, c = false] (float v) mutable { (c ? y : x).push_back(v); c = !c; };
     readFloats(strm, storeFloats);
 }
 
