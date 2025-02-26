@@ -1,5 +1,5 @@
 #include "args.h"
-#include "cuda_util.h"
+#include "util.h"
 #include <cassert>
 #include <cstddef>
 #include <cstring>
@@ -64,7 +64,7 @@ __global__ void swap_cost(const double *points, const std::size_t n_points,
     swaps[idx] = s;
 }
 
-void pam(const Args &args) {
+std::vector<std::size_t> pam(const Args<std::size_t, double> &args) {
     assert(args.n_clusters <= args.n_points);
     assert(args.n_clusters <= N_THREADS);
 
@@ -134,17 +134,17 @@ void pam(const Args &args) {
     CUDA_ASSERT(cudaFree(d_medoids));
     CUDA_ASSERT(cudaFree(d_swaps));
 
-    for (std::size_t i = 0; i < args.n_clusters; i++) {
-        printDoubles(&args.data.data()[medoids[i] * args.d_points], 1, args.d_points);
-    }
+    return medoids;
 }
 
 int main(const int argc, const char *argv[]) {
-    const Args args = parseArgs(argc, argv);
+    const auto args = parseArgs<std::size_t, double>(argc, argv);
 
     cudaInit();
 
-    pam(args);
+    TRACE(PAM, const auto medoids = pam(args);)
+
+    save_medoids(args, medoids);
 
     return 0;
 }
