@@ -1,0 +1,5 @@
+binary,n_clusters,n_points,total_time,total_kernel_exec_time,total_kernel_launch_time,avg_kernel_exec_time,avg_kernel_launch_time,iterations,memcpy_host_to_device_time,memcpy_device_to_host_time,cost
+09_pam_end_early,3,100,796.039,54.687,239.355,13.6718,59.838800000000006,4.0,2.081,2.081,28200.712001572705
+09_pam_end_early,3,1000,1146.532,394.526,201.167,131.5087,67.0557,3.0,1.823,1.823,27848.866787708488
+medoids.py,3,100,2458.349,0.0,0.0,0.0,0.0,0.0,0.0,0.0,27806.7834036191
+medoids.py,3,1000,44399.79,0.0,0.0,0.0,0.0,0.0,0.0,0.0,27864.070835591803

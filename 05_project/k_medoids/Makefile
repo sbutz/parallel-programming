@@ -10,10 +10,12 @@ GENCODE_SM72    := -gencode arch=compute_72,code=sm_72
 GENCODE_SM80    := -gencode arch=compute_80,code=sm_80
 GENCODE_FLAGS	:= $(GENCODE_SM80)
 
-NVCC_FLAGS += -dc -Xcompiler -lineinfo -DUSE_NVTX -lnvToolsExt $(GENCODE_FLAGS) -std=c++14
+NVCC_FLAGS += -dc -lineinfo -DUSE_NVTX -lnvToolsExt $(GENCODE_FLAGS) -std=c++14
 NVCC_LDFLAGS = -ccbin=g++  -lcuda -lcudart
 
 OBJDIR=./build
+REPORTDIR=./report
+PLOTDIR=./plots
 
 $(OBJDIR)/%.o: %.cu
 	@mkdir -p $(OBJDIR)
@@ -23,24 +25,65 @@ $(OBJDIR)/%.o: %.cpp
 	@mkdir -p $(OBJDIR)
 	$(NVCC) $(NVCC_FLAGS) -c -o $@ $<
 
-$(OBJDIR)/%: $(OBJDIR)/%.o $(OBJDIR)/args.o
+$(OBJDIR)/%: $(OBJDIR)/%.o
 	$(NVCC) $(GENCODE_FLAGS) -o $@ $(NVCC_LDFLAGS) $^
 
-#KERNELS = $(OBJDIR)/01_pam_cpu $(OBJDIR)/01_pam
-KERNELS = $(OBJDIR)/01_pam
+KERNELS =	$(OBJDIR)/01_pam \
+	$(OBJDIR)/02_pam_no_sqrt \
+	$(OBJDIR)/03_pam_2d \
+	$(OBJDIR)/04_pam_single_precision \
+	$(OBJDIR)/05_pam_intrinsics \
+	$(OBJDIR)/06_pam_no_pow \
+	$(OBJDIR)/07_pam_shmem \
+	$(OBJDIR)/08_pam_small_block \
+	$(OBJDIR)/09_pam_end_early \
+	$(OBJDIR)/10_pam_next \
+	$(OBJDIR)/11_pam_matrix
+KERNELS = $(OBJDIR)/09_pam_end_early
 
-all: $(KERNELS)
+$(OBJDIR)/data.csv: scripts/datagen.py
+	python3 scripts/datagen.py > $(OBJDIR)/data.csv
 
+DATASETS = $(OBJDIR)/data.csv
+
+all: $(KERNELS) $(DATASETS)
+
+N_CLUSTERS=3
 #NVPROF=nsys profile --stats=true --output="./build/report%n"
-N_CLUSTERS=5
-run: $(KERNELS)
-	python3 datagen.py > $(OBJDIR)/data.csv
-	python3 medoids.py $(N_CLUSTERS) $(OBJDIR)/data.csv | sort > $(OBJDIR)/medoids.py.csv
+run: all ./scripts/visualize.py
+	@mkdir -p $(PLOTDIR)
+
+	./medoids.py $(N_CLUSTERS) $(OBJDIR)/data.csv $(OBJDIR)/medoids.csv
+	./scripts/cost.py $(OBJDIR)/data.csv $(OBJDIR)/medoids.csv
+	./scripts/visualize.py $(OBJDIR)/data.csv $(OBJDIR)/medoids.csv $(PLOTDIR)/kmedoids-py.png
+
 	for kernel in $(KERNELS); do \
-		$(NVPROF) $$kernel $(N_CLUSTERS) $(OBJDIR)/data.csv | sort > $(OBJDIR)/medoids.csv; \
-		diff $(OBJDIR)/medoids.py.csv $(OBJDIR)/medoids.csv; \
-		test $$? -eq 0 || exit 1; \
+		echo "Running $$kernel"; \
+		$(NVPROF) $$kernel $(N_CLUSTERS) $(OBJDIR)/data.csv $(OBJDIR)/medoids.csv; \
+		./scripts/cost.py $(OBJDIR)/data.csv $(OBJDIR)/medoids.csv; \
+		./scripts/visualize.py $(OBJDIR)/data.csv $(OBJDIR)/medoids.csv $(PLOTDIR)/kmedoids-$$(basename $$kernel).png; \
 	done
+
+ncu: all
+	@mkdir -p $(REPORTDIR)
+	for kernel in $(KERNELS); do \
+		echo "Profiling $$kernel"; \
+		ncu \
+			--config-file off \
+			--export $(REPORTDIR)/ncu-$$(basename $$kernel) \
+			--force-overwrite \
+			--set full \
+			--import-source yes  \
+			--source-folder . \
+			$$kernel $(N_CLUSTERS) $(OBJDIR)/data.csv $(OBJDIR)/medoids.csv; \
+	done
+
+$(REPORTDIR)/perf.csv: ./scripts/perf.py
+	@mkdir -p $(REPORTDIR)
+	python3 ./scripts/perf.py $(REPORTDIR)/perf.csv
+
+plots: $(REPORTDIR)/perf.csv ./scripts/plots.py
+	python3 ./scripts/plots.py $(REPORTDIR)/perf.csv
 
 .PHONY.: clean
 clean:
