@@ -29,8 +29,7 @@ struct CollisionHandlingData {
 
 void allocateDeviceMemory(
   unsigned int ** d_pointStates, IdxType ** d_clusters,
-  IdxType ** d_seedLists, IdxType ** d_seedClusterIds, IdxType ** d_seedLengths,
-  unsigned int ** d_syncCounter, CollisionHandlingData * collisionHandlingData, IdxType ** d_processedIdxs,
+  CollisionHandlingData * collisionHandlingData,
   int nBlocks,
   IdxType n
 );
@@ -48,8 +47,7 @@ constexpr unsigned int stateThreadGroupIdxMask = 0x00ffffff;
 void findClusters(
   unsigned int * d_pointStates, IdxType * d_clusters,
   float * xs, float * ys, IdxType n,
-  IdxType * d_seedLists, IdxType * d_seedClusterIds, IdxType * d_seedLengths,
-  unsigned int * d_syncCounter, CollisionHandlingData collisionHandlingData, IdxType * d_processedIdxs,
+  CollisionHandlingData collisionHandlingData,
   IdxType coreThreshold, float rsq
 );
 

@@ -7,21 +7,38 @@
 
 constexpr IdxType maxSeedLength = 1024; // TODO: Could be larger!?
 
-
-struct ThreadData {
-  IdxType currentClusterId;
-  unsigned int threadGroupIdx;
-  IdxType pointBeingProcessedIdx;
-  IdxType * clusters;
-  unsigned int * pointStates;
-  IdxType * seedList;
-  IdxType * seedClusterIds;
-  IdxType * seedLength;
-  IdxType * seedReserved;
-  IdxType * neighborBuffer;
-  IdxType * neighborCount;
-  bool * s_collisions;
-};
+static __device__ __forceinline__ IdxType appendToSeedList(
+  IdxType * pointStates,
+  IdxType * seedLength, IdxType * seedList, IdxType * seedClusterIds, IdxType * s_seedReserved,
+  unsigned int otherState, IdxType pointIdx,
+  IdxType ourClusterId,
+  unsigned int potentiallyFreeMask
+) {
+  int lane = threadIdx.x % 32;
+  int leader = __ffs(potentiallyFreeMask) - 1;
+  int nPotentiallyFree = __popc(potentiallyFreeMask);
+  IdxType oldReserved;
+  if (lane == leader) oldReserved = atomicAdd(s_seedReserved, nPotentiallyFree);
+  oldReserved = __shfl_sync(potentiallyFreeMask, oldReserved, leader);
+  int potentialThreadPosition = __popc(potentiallyFreeMask & ((1u << (lane + 1)) - 1));
+  if (oldReserved < maxSeedLength && potentialThreadPosition <= maxSeedLength - oldReserved) {
+    otherState = atomicCAS(&pointStates[pointIdx], stateFree, stateReserved);
+    unsigned int actuallyFreeMask = __ballot_sync(__activemask(), otherState == stateFree);
+    int nActuallyFree = __popc(actuallyFreeMask);
+    int actualLeader = __ffs(actuallyFreeMask) - 1;
+    if (otherState == stateFree) {
+      int h;
+      if (lane == actualLeader) h = atomicAdd(seedLength, __popc(actuallyFreeMask));
+      h = __shfl_sync(actuallyFreeMask, h, actualLeader);
+      int offset = __popc(actuallyFreeMask & ((1u << lane) - 1));
+      seedList[h + offset] = pointIdx; seedClusterIds[h + offset] = ourClusterId;
+    }
+    if (lane == leader) atomicSub(s_seedReserved, nPotentiallyFree - nActuallyFree);
+  } else {
+    if (lane == leader) atomicSub(s_seedReserved, nPotentiallyFree);
+  }
+  return otherState;
+}
 
 // collisionMatrix:
 //   in theory: n x n, but only entries (i,j) with j >= i used
@@ -39,70 +56,45 @@ struct ThreadData {
 //         (i, i) -> i * n - i * (i - 1) / 2
 //         (i, j) -> i * n - i * (i + 1) / 2 + j
 static __device__ void markAsCandidate(
-  ThreadData const & td,
-  IdxType pointIdx
+  IdxType * clusters, unsigned int * pointStates, 
+  IdxType * seedList, IdxType * seedClusterIds, IdxType * seedLength, IdxType * s_seedReserved,
+  bool * s_collisions,
+  IdxType ourClusterId,
+  IdxType otherPointIdx
 ) {
-  unsigned int state = td.pointStates[pointIdx];
-  unsigned int potentiallyFreeMask = __ballot_sync(__activemask(), state == stateFree);
-  if (state == stateFree) {
-    int lane = threadIdx.x % 32;
-    int leader = __ffs(potentiallyFreeMask) - 1;
-    int nPotentiallyFree = __popc(potentiallyFreeMask);
-    IdxType oldReserved;
-    if (lane == leader) oldReserved = atomicAdd(td.seedReserved, nPotentiallyFree);
-    oldReserved = __shfl_sync(potentiallyFreeMask, oldReserved, leader);
-    int potentialThreadPosition = __popc(potentiallyFreeMask & ((1u << (lane + 1)) - 1));
-    if (oldReserved < maxSeedLength && potentialThreadPosition <= maxSeedLength - oldReserved) {
-      state = atomicCAS(&td.pointStates[pointIdx], stateFree, stateReserved);
-      unsigned int actuallyFreeMask = __ballot_sync(__activemask(), state == stateFree);
-      int nActuallyFree = __popc(actuallyFreeMask);
-      int actualLeader = __ffs(actuallyFreeMask) - 1;
-      if (state == stateFree) {
-        int h;
-        if (lane == actualLeader) h = atomicAdd(td.seedLength, __popc(actuallyFreeMask));
-        h = __shfl_sync(actuallyFreeMask, h, actualLeader);
-        int offset = __popc(actuallyFreeMask & ((1u << lane) - 1));
-        td.seedList[h + offset] = pointIdx; td.seedClusterIds[h + offset] = td.currentClusterId;
-      }
-      if (lane == leader) atomicSub(td.seedReserved, nPotentiallyFree - nActuallyFree);
-    } else {
-      if (lane == leader) atomicSub(td.seedReserved, nPotentiallyFree);
-    }
+  unsigned int otherState = pointStates[otherPointIdx];
+  unsigned int potentiallyFreeMask = __ballot_sync(__activemask(), otherState == stateFree);
+  if (otherState == stateFree) {
+    otherState = appendToSeedList(
+      pointStates,
+      seedLength, seedList, seedClusterIds, s_seedReserved,
+      otherState, otherPointIdx,
+      ourClusterId,
+      potentiallyFreeMask
+    );
   }
-  switch (state & stateStateBitsMask) {
+  switch (otherState & stateStateBitsMask) {
     case stateCore: {
       // TODO: handle collision!
     } break;
     case stateNoiseOrBorder:
     case stateFree:
     case stateReserved: {
-      td.clusters[pointIdx] = td.currentClusterId;
+      clusters[otherPointIdx] = ourClusterId;
     } break;
     case stateUnderInspection: {
-      td.s_collisions[state & stateThreadGroupIdxMask] = true;
-      //printf("inspection\n");
-      //(void)atomicCAS(&td.clusters[pointIdx], 0, td.currentClusterId);
+      s_collisions[otherState & stateThreadGroupIdxMask] = true;
     } break;
     default:
       ; // do nothing
   }
-  /*
-  if (oldState == cUnprocessed) {
-  } else {
-    if (oldState != cNoise && oldState != cChain + blockIdx.x) {
-      if (oldState < pointIdx) {
-        // (oldState, pointIdx)
-        collisionMatrix[pointIdx + oldState * (2 * nChains - (oldState + 1)) / 2] = true;
-      } else {
-        collisionMatrix[oldState + pointIdx * (2 * nChains - (pointIdx + 1)) / 2] = true;
-      }
-    }
-  }
-  */
 }
 
 static __device__ void processObject(
-  ThreadData const & td,
+  IdxType * clusters, unsigned int * pointStates,
+  IdxType * seedList, IdxType * seedClusterIds, IdxType * seedLength, IdxType * s_seedReserved,
+  bool * s_collisions, IdxType * s_neighborBuffer, IdxType * s_neighborCount,
+  IdxType ourPointIdx, IdxType ourClusterId,
   float px, float py,
   float const * xs, float const * ys, IdxType pointIdx,
   IdxType coreThreshold, float rsq
@@ -116,18 +108,21 @@ static __device__ void processObject(
     int leaderLane = __ffs(neighborMask) - 1;
     int nNeighbors = __popc(neighborMask);
     int oldNeighborCount = 0;
-    if (lane == leaderLane) oldNeighborCount = atomicAdd(td.neighborCount, nNeighbors);
+    if (lane == leaderLane) oldNeighborCount = atomicAdd(s_neighborCount, nNeighbors);
     oldNeighborCount = __shfl_sync(neighborMask, oldNeighborCount, leaderLane);
     if (oldNeighborCount < coreThreshold && oldNeighborCount + nNeighbors >= coreThreshold && lane == leaderLane) {
-      td.clusters[td.pointBeingProcessedIdx] = td.currentClusterId;
+      clusters[ourPointIdx] = ourClusterId;
       __threadfence();
-      td.pointStates[td.pointBeingProcessedIdx] = stateCore;
+      pointStates[ourPointIdx] = stateCore;
     }
     int h = oldNeighborCount + __popc(neighborMask & ((1u << lane) - 1));
     if (h >= coreThreshold) {
-      markAsCandidate(td, pointIdx);
+      markAsCandidate(
+        clusters, pointStates,
+        seedList, seedClusterIds, seedLength, s_seedReserved,
+        s_collisions, ourClusterId, pointIdx);
     } else {
-      td.neighborBuffer[h] = pointIdx;
+      s_neighborBuffer[h] = pointIdx;
     }
   }
 }
@@ -135,16 +130,16 @@ static __device__ void processObject(
 // len(seedLists) must equal maxSeedLength * maxNumberOfThreadGroups
 // shared memory required: ( (coreThreshold + 127) / 128 * 128 + 1 ) * sizeof(IdxType)
 static __global__ void kernel_clusterExpansion(
-  IdxType * cluster, unsigned int * pointState,
+  IdxType * clusters, unsigned int * pointStates,
   float const * xs, float const * ys, IdxType n,
   IdxType * seedLists, unsigned int * seedClusterIds, IdxType * seedLengths,
   unsigned int * syncCounter, CollisionHandlingData collisionHandlingData,
   IdxType coreThreshold, float rsq
 ) {
   // shared memory:
-  //   neighborBuffer: coreThreshold IdxType values in blocks of 128 bytes
-  //   neighborCount:  1 IdxType (aligned to a 128 byte block)
-  //   seedReserved:   1 IdxType
+  //   s_neighborBuffer: coreThreshold IdxType values in blocks of 128 bytes
+  //   s_neighborCount:  1 IdxType (aligned to a 128 byte block)
+  //   s_seedReserved:   1 IdxType
   //   s_collisions:   nBlock bools, aligned to a 128 byte block
   //   s_doneWithIdx:  nBlock IdxType values, aligned to a 128 byte block
   extern __shared__ unsigned char sMem [];
@@ -152,52 +147,46 @@ static __global__ void kernel_clusterExpansion(
   unsigned int stride = blockDim.x;
   unsigned int nBlocks = gridDim.x;
 
-  ThreadData td;
-  td.threadGroupIdx = blockIdx.x;
+  unsigned int threadGroupIdx = blockIdx.x;
 
-  td.clusters = cluster;
-  td.pointStates = pointState;
-
-  td.neighborBuffer = (IdxType *)sMem; // Length: coreThreshold elements
-  td.neighborCount = (IdxType *) (sMem + (coreThreshold * sizeof(IdxType) + 127) / 128 * 128);
-  td.seedReserved = td.neighborCount + 1;
-  td.s_collisions = (bool *) ((char *)td.neighborCount + 128);
+  IdxType * s_neighborBuffer = (IdxType *)sMem; // Length: coreThreshold elements
+  IdxType * s_neighborCount = (IdxType *) (sMem + (coreThreshold * sizeof(IdxType) + 127) / 128 * 128);
+  IdxType * s_seedReserved = s_neighborCount + 1;
+  bool * s_collisions = (bool *) ((char *)s_neighborCount + 128);
   static_assert(128 % alignof(IdxType) == 0, "");
   static_assert(alignof(IdxType) == alignof(unsigned int) && sizeof(IdxType) == sizeof(unsigned int), "");
 
-  if (threadIdx.x == 0) { *td.neighborCount = 0; }
-  for (unsigned int i = threadIdx.x; i < nBlocks; i += stride) td.s_collisions[i] = false;
+  if (threadIdx.x == 0) { *s_neighborCount = 0; }
+  for (unsigned int i = threadIdx.x; i < nBlocks; i += stride) s_collisions[i] = false;
 
-  td.seedLength = &seedLengths[td.threadGroupIdx];
-  td.seedList = &seedLists[maxSeedLength * td.threadGroupIdx];
-  td.seedClusterIds = &seedClusterIds[maxSeedLength * td.threadGroupIdx];
+  IdxType * ourSeedLength = &seedLengths[threadGroupIdx];
+  IdxType * ourSeedList = &seedLists[maxSeedLength * threadGroupIdx];
+  IdxType * ourSeedClusterIds = &seedClusterIds[maxSeedLength * threadGroupIdx];
 
-  IdxType seedLength = *td.seedLength;
+  IdxType seedLengthTemp = *ourSeedLength;
 
   __syncthreads();
 
-  if (seedLength > 0) {
-    --seedLength;
+  if (seedLengthTemp > 0) {
+    --seedLengthTemp;
 
-    if (threadIdx.x == 0) { *td.seedLength = seedLength; *td.seedReserved = seedLength; }
-
-    __syncthreads();
-    
-    td.pointBeingProcessedIdx = td.seedList[seedLength];
-    td.currentClusterId = td.seedClusterIds[seedLength];
-    if (td.currentClusterId == 0) {
-      td.currentClusterId = td.pointBeingProcessedIdx + 1;
-    }
-    if (threadIdx.x == 0) td.pointStates[td.pointBeingProcessedIdx] = stateUnderInspection | td.threadGroupIdx;
+    if (threadIdx.x == 0) { *ourSeedLength = seedLengthTemp; *s_seedReserved = seedLengthTemp; }
+    IdxType ourPointIdx = ourSeedList[seedLengthTemp];
+    IdxType ourClusterId = ourSeedClusterIds[seedLengthTemp];
+    if (ourClusterId == 0) ourClusterId = ourPointIdx + 1;
+    if (threadIdx.x == 0) pointStates[ourPointIdx] = stateUnderInspection | threadGroupIdx;
 
     __syncthreads();
 
-    float x = xs[td.pointBeingProcessedIdx], y = ys[td.pointBeingProcessedIdx];
+    float x = xs[ourPointIdx], y = ys[ourPointIdx];
     {
       IdxType strideIdx = 0;
       for (; strideIdx < (n - 1) / stride; ++strideIdx) {
         processObject(
-          td,
+          clusters, pointStates, 
+          ourSeedList, ourSeedClusterIds, ourSeedLength, s_seedReserved,
+          s_collisions, s_neighborBuffer, s_neighborCount,
+          ourPointIdx, ourClusterId,
           x, y,
           xs, ys, strideIdx * stride + threadIdx.x,
           coreThreshold, rsq
@@ -205,7 +194,10 @@ static __global__ void kernel_clusterExpansion(
       }
       if (threadIdx.x < n - strideIdx * stride) {
         processObject(
-          td,
+          clusters, pointStates,
+          ourSeedList, ourSeedClusterIds, ourSeedLength, s_seedReserved,          
+          s_collisions, s_neighborBuffer, s_neighborCount,
+          ourPointIdx, ourClusterId,
           x, y,
           xs, ys, strideIdx * stride + threadIdx.x,
           coreThreshold, rsq
@@ -215,51 +207,53 @@ static __global__ void kernel_clusterExpansion(
 
     __syncthreads();
 
-    if (*td.neighborCount >= coreThreshold) {
-      //if (threadIdx.x == 0) pointState[seedPointIdx] = stateCore;
+    IdxType cnt = *s_neighborCount;
+    if (cnt >= coreThreshold) {
       for (int i = threadIdx.x; i < coreThreshold; i += stride) {
-        markAsCandidate(td, td.neighborBuffer[i]);
+        markAsCandidate(
+          clusters, pointStates,
+          ourSeedList, ourSeedClusterIds, ourSeedLength, s_seedReserved,
+          s_collisions, ourClusterId, s_neighborBuffer[i]);
       }
     } else {
-      if (threadIdx.x == 0) td.pointStates[td.pointBeingProcessedIdx] = stateNoiseOrBorder;
+      if (threadIdx.x == 0) pointStates[ourPointIdx] = stateNoiseOrBorder;
     }
-  }
 
-  __syncthreads();
+    __syncthreads();
 
-  // copy our collisions to global memory
-  for (unsigned int i = threadIdx.x; i < nBlocks; i += stride) collisionHandlingData.d_collisionMatrix[nBlocks * td.threadGroupIdx + i] = td.s_collisions[i];
-  //if (threadIdx.x == 0) { lockMutex(collisionHandlingData.d_mutex); }
+    // copy our collisions to global memory
+    for (unsigned int i = threadIdx.x; i < nBlocks; i += stride) {
+      collisionHandlingData.d_collisionMatrix[nBlocks * threadGroupIdx + i] = s_collisions[i];
+    }
 
-  __threadfence();
+    __threadfence();
 
-  if (threadIdx.x == 0) collisionHandlingData.d_doneWithIdx[td.threadGroupIdx] = td.pointBeingProcessedIdx;
+    if (threadIdx.x == 0) collisionHandlingData.d_doneWithIdx[threadGroupIdx] = ourPointIdx + 1;
 
-  __threadfence();
+    __threadfence();
 
-  if (threadIdx.x == 0) (void)atomicAdd(collisionHandlingData.d_mutex, 1);
-  //if (threadIdx.x == 0) unlockMutex(collisionHandlingData.d_mutex);
+    if (threadIdx.x == 0) (void)atomicAdd(collisionHandlingData.d_mutex, 1);
 
-  __threadfence();
+    __threadfence();
 
-  for (unsigned int i = threadIdx.x; i < nBlocks; i += stride) {
-    if (i != td.threadGroupIdx) {
-      IdxType otherIdx = collisionHandlingData.d_doneWithIdx[i];
-      if (otherIdx) {
-        bool collision = td.s_collisions[i] || collisionHandlingData.d_collisionMatrix[i * nBlocks + td.threadGroupIdx];
-        if (collision) {
-          //printf("%u\n", otherIdx);
-          if (*td.neighborCount >= coreThreshold) {
-            // we are core
-            if (td.pointStates[otherIdx] == stateCore) {
-              // mark conflict in union-find datastructure
+    for (unsigned int i = threadIdx.x; i < nBlocks; i += stride) {
+      if (i != threadGroupIdx) {
+        IdxType otherIdx = collisionHandlingData.d_doneWithIdx[i] - 1;
+        if (otherIdx != (IdxType)-1) {
+          bool collision = s_collisions[i] || collisionHandlingData.d_collisionMatrix[i * nBlocks + threadGroupIdx];
+          if (collision) {
+            if (cnt >= coreThreshold) {
+              // we are core
+              if (pointStates[otherIdx] == stateCore) {
+                // mark conflict in union-find datastructure
+              } else {
+                clusters[otherIdx] = ourClusterId;
+              }
             } else {
-              td.clusters[otherIdx] = td.currentClusterId;
-            }
-          } else {
-            // we are noise
-            if (td.pointStates[otherIdx] == stateCore) {
-              td.clusters[td.pointBeingProcessedIdx] = td.clusters[otherIdx];
+              // we are noise
+              if (pointStates[otherIdx] == stateCore) {
+                clusters[ourPointIdx] = clusters[otherIdx];
+              }
             }
           }
         }
@@ -270,8 +264,7 @@ static __global__ void kernel_clusterExpansion(
 
 void allocateDeviceMemory(
   unsigned int ** d_pointStates, IdxType ** d_clusters,
-  IdxType ** d_seedLists, IdxType ** d_seedClusterIds, IdxType ** d_seedLengths,
-  unsigned int ** d_syncCounter, CollisionHandlingData * collisionHandlingData, IdxType ** d_processedIdxs,
+  CollisionHandlingData * collisionHandlingData,
   int nBlocks,
   IdxType n
 ) {
@@ -280,18 +273,12 @@ void allocateDeviceMemory(
   CUDA_CHECK(cudaMalloc(d_clusters, n * sizeof(IdxType)))
   CUDA_CHECK(cudaMemset(*d_clusters, 0, n * sizeof(IdxType)))
 
-  CUDA_CHECK(cudaMalloc(d_seedLists, nBlocks * maxSeedLength * sizeof(IdxType)))
-  CUDA_CHECK(cudaMalloc(d_seedClusterIds, nBlocks * maxSeedLength * sizeof(IdxType)))
-  CUDA_CHECK(cudaMalloc(d_seedLengths, nBlocks * sizeof(IdxType)))
-  CUDA_CHECK(cudaMemset(*d_seedLengths, 0, nBlocks * sizeof(IdxType)))
-  CUDA_CHECK(cudaMalloc(d_syncCounter, sizeof(unsigned int)))
 
   auto chdSizes = CollisionHandlingData::calculateSizes(nBlocks);
   CUDA_CHECK(cudaMalloc(&collisionHandlingData->d_mutex, sizeof(unsigned int)))
   CUDA_CHECK(cudaMalloc(&collisionHandlingData->d_doneWithIdx, chdSizes.szDoneWithIdx))
   CUDA_CHECK(cudaMalloc(&collisionHandlingData->d_collisionMatrix, chdSizes.szCollisionMatrix))
 
-  CUDA_CHECK(cudaMalloc(d_processedIdxs, nBlocks * sizeof(IdxType)))
 }
 
 static __global__ void kernel_refillSeed(
@@ -326,12 +313,21 @@ static __global__ void kernel_refillSeed(
 void findClusters(
   unsigned int * d_pointStates, IdxType * d_clusters,
   float * xs, float * ys, IdxType n,
-  IdxType * d_seedLists, IdxType * d_seedClusterIds, IdxType * d_seedLengths,
-  unsigned int * d_syncCounter, CollisionHandlingData collisionHandlingData, IdxType * d_processedIdxs,
+  CollisionHandlingData collisionHandlingData,
   IdxType coreThreshold, float rsq
 ) {
   constexpr int nBlocks = 6;
   constexpr int nThreadsPerBlock = 512;
+
+  IdxType * d_seedLists;
+  IdxType * d_seedClusterIds;
+  IdxType * d_seedLengths;
+  unsigned int * d_syncCounter;
+  CUDA_CHECK(cudaMalloc(&d_seedLists, nBlocks * maxSeedLength * sizeof(IdxType)))
+  CUDA_CHECK(cudaMalloc(&d_seedClusterIds, nBlocks * maxSeedLength * sizeof(IdxType)))
+  CUDA_CHECK(cudaMalloc(&d_seedLengths, nBlocks * sizeof(IdxType)))
+  CUDA_CHECK(cudaMemset(d_seedLengths, 0, nBlocks * sizeof(IdxType)))
+  CUDA_CHECK(cudaMalloc(&d_syncCounter, sizeof(unsigned int)))
 
   IdxType * d_foundAt;
   CUDA_CHECK(cudaMalloc(&d_foundAt, sizeof(IdxType)))
@@ -361,9 +357,18 @@ void findClusters(
 
     CUDA_CHECK(cudaMemset(d_syncCounter, 0, sizeof(unsigned int)))
     CUDA_CHECK(cudaMemset((void *)collisionHandlingData.d_doneWithIdx, 0, nBlocks * sizeof(IdxType)))
-    kernel_clusterExpansion <<<dim3(nBlocks), dim3(nThreadsPerBlock), ( (coreThreshold * sizeof(IdxType) + 127) / 128 * 128 + 128 
-    + (nBlocks * sizeof(bool) + 127) / 128 * 128 + (nBlocks * sizeof(IdxType) + 127) / 128 * 128) >>> (
-      d_clusters, d_pointStates, xs, ys, n, d_seedLists, d_seedClusterIds, d_seedLengths, d_syncCounter, collisionHandlingData, coreThreshold, rsq
+    kernel_clusterExpansion <<<
+      nBlocks,
+      nThreadsPerBlock,
+      (
+        (coreThreshold * sizeof(IdxType) + 127) / 128 * 128 + 128 
+        + (nBlocks * sizeof(bool) + 127) / 128 * 128 + (nBlocks * sizeof(IdxType) + 127) / 128 * 128
+      )
+    >>> (
+      d_clusters, d_pointStates,
+      xs, ys, n,
+      d_seedLists, d_seedClusterIds, d_seedLengths, d_syncCounter, collisionHandlingData,
+      coreThreshold, rsq
     );
     CUDA_CHECK(cudaGetLastError())
     CUDA_CHECK(cudaDeviceSynchronize())

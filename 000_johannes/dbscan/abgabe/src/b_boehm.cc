@@ -122,23 +122,17 @@ static auto runDbscan (
 
   unsigned int * d_pointStates;
   IdxType * d_clusters;
-  IdxType * d_seedLists;
-  IdxType * d_seedClusterIds;
-  IdxType * d_seedLengths;
-  unsigned int * d_syncCounter;
   CollisionHandlingData collisionHandlingData;
-  IdxType * d_processedIdxs;
   constexpr int nBlocks = 6;
 
-  allocateDeviceMemory(&d_pointStates, &d_clusters, &d_seedLists, &d_seedLengths, &d_seedClusterIds, &d_syncCounter, &collisionHandlingData, &d_processedIdxs, nBlocks, nDataPoints);
+  allocateDeviceMemory(&d_pointStates, &d_clusters, &collisionHandlingData, nBlocks, nDataPoints);
 
   CUDA_CHECK(cudaMemcpy(d_x.ptr(), h_x, nDataPoints * sizeof(float), cudaMemcpyHostToDevice))
   CUDA_CHECK(cudaMemcpy(d_y.ptr(), h_y, nDataPoints * sizeof(float), cudaMemcpyHostToDevice))
 
   findClusters(
     d_pointStates, d_clusters, d_x.ptr(), d_y.ptr(), nDataPoints,
-    d_seedLists, d_seedClusterIds, d_seedLengths, d_syncCounter,
-    collisionHandlingData, d_processedIdxs, coreThreshold, r * r
+    collisionHandlingData, coreThreshold, r * r
   );
 
   std::vector<unsigned int> states(nDataPoints);
