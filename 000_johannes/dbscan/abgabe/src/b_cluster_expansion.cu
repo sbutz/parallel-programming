@@ -308,49 +308,33 @@ static __global__ void kernel_clusterExpansion(
   }
 }
 
-static __global__ void kernel_refillSeeds(
-  IdxType * d_continueAt,
-  IdxType * d_seedLists, IdxType * d_seedClusterIds, IdxType * d_seedLengths,
-  unsigned int * d_pointState, IdxType * d_clusters, IdxType n,
-  IdxType nThreadGroupsTotal
+static __global__ void kernel_refillSeed(
+    IdxType * d_foundAt,
+    IdxType * d_seedLists, IdxType * d_seedClusterIds, IdxType * d_seedLengths, int k,
+    unsigned int * d_pointState, IdxType * d_clusters, IdxType n,
+    IdxType startPos
 ) {
-  constexpr unsigned int wrp = 32;
-  __shared__ IdxType foundIndices[wrp];
-  int nAvailable = 0;
-
-  IdxType strideIdx = *d_continueAt / wrp;
-
-  int tg = 0;
-  for (; tg < nThreadGroupsTotal; ++tg) {
-    IdxType seedLength = d_seedLengths[tg];
-    if (seedLength == 0) {
-      if (nAvailable == 0) {
-        for (; strideIdx <= (n - 1) / wrp; ++strideIdx) {
-          IdxType idx = strideIdx * wrp + threadIdx.x;
-          bool haveOne = idx < n && !d_pointState[idx];
-          int foundMask = __ballot_sync(0xffffffff, haveOne);
-          if (haveOne) foundIndices[__popc(foundMask & ((1u << threadIdx.x) - 1))] = idx;
-          nAvailable = __popc(foundMask);
-          if (nAvailable) break;
+    constexpr unsigned int wrp = 32;
+    IdxType result = (IdxType)-1;
+    for (IdxType strideIdx = startPos / wrp; strideIdx <= ((n - 1) / wrp); ++strideIdx) {
+        IdxType idx = strideIdx * wrp + threadIdx.x;
+        int unvisitedMask = __ballot_sync(0xffffffff, idx >= startPos && idx < n && !d_pointState[idx]);
+        if (unvisitedMask != 0) {
+            result = strideIdx * wrp + __ffs(unvisitedMask) - 1;
+            break;
         }
-      }
-      if (nAvailable == 0) break;
-
-      __syncthreads();
-
-      --nAvailable;
-      if (threadIdx.x == 0) {
-        IdxType pointIdx = foundIndices[nAvailable];
-        d_pointState[pointIdx] = stateUnderInspection | (unsigned int)tg;
-        d_seedLengths[tg] = 1;
-        d_seedLists[tg * maxSeedLength] = pointIdx;
-        d_seedClusterIds[tg * maxSeedLength] = d_clusters[pointIdx];
-      }
-    } else {
-      d_pointState[d_seedLists[tg * maxSeedLength] - 1] = stateUnderInspection | (unsigned int)tg;
     }
-  }
-  if (threadIdx.x == 0) *d_continueAt = (tg == 0) ? (IdxType)-1 : strideIdx * wrp;
+    if (threadIdx.x == 0) {
+      if (result == (IdxType)-1) {
+        *d_foundAt = result;
+      } else {
+        *d_foundAt = result;
+        d_pointState[result] = stateReserved | (unsigned int)k;
+        d_seedLists[k * maxSeedLength] = result;
+        d_seedClusterIds[k * maxSeedLength] = d_clusters[result];
+        d_seedLengths[k] = 1;
+      }
+    }
 }
 
 static inline auto determineCEBlockGeometry(
@@ -402,24 +386,36 @@ void findClusters(
   auto && d_seedClusterIds = ManagedDeviceArray<IdxType> (nCEThreadGroupsTotal * maxSeedLength);
   auto && d_seedLengths = ManagedDeviceArray<IdxType> (nCEThreadGroupsTotal);
   auto && d_synchronizer = ManagedDeviceArray<unsigned int> (1);
-  auto && d_continueAt = ManagedDeviceArray<IdxType> (1);
+  auto && d_foundAt = ManagedDeviceArray<IdxType> (1);
 
   auto && collisionHandlingData = CollisionHandlingData(nCEThreadGroupsTotal, n);
 
   CUDA_CHECK(cudaMemset(d_pointStates, 0, n * sizeof(unsigned int)))
   CUDA_CHECK(cudaMemset(d_clusters, 0, n * sizeof(IdxType)))
   CUDA_CHECK(cudaMemset(d_seedLengths.ptr(), 0, nCEThreadGroupsTotal * sizeof(IdxType)))
-  CUDA_CHECK(cudaMemset(d_continueAt.ptr(), 0, sizeof(IdxType)))
 
   IdxType seedLengths [nCEThreadGroupsTotal];
+  IdxType startPos = 0;
   for (;;) {
-    kernel_refillSeeds<<<1,32>>>(
-      d_continueAt.ptr(), d_seedLists.ptr(), d_seedClusterIds.ptr(), d_seedLengths.ptr(),
-      d_pointStates, d_clusters, n, nCEThreadGroupsTotal
-    );
-    IdxType continueAt;
-    CUDA_CHECK(cudaMemcpy(&continueAt, d_continueAt.ptr(), sizeof(IdxType), cudaMemcpyDeviceToHost))
-    if (continueAt + 1 == 0) break;
+    CUDA_CHECK(cudaMemcpy(seedLengths, d_seedLengths.ptr(), nCEThreadGroupsTotal * sizeof(IdxType), cudaMemcpyDeviceToHost))
+    bool stillWork = false;
+
+    for (int k = 0; k < nCEThreadGroupsTotal; ++k) {
+      if (seedLengths[k]) {
+        stillWork = true;
+      } else if (startPos != (IdxType)-1) {
+        IdxType foundAt = (IdxType)-1;
+        kernel_refillSeed <<<1, 32>>> (
+          d_foundAt.ptr(), d_seedLists.ptr(), d_seedClusterIds.ptr(), d_seedLengths.ptr(), k, d_pointStates, d_clusters, n, startPos
+        );
+        CUDA_CHECK(cudaGetLastError())
+        CUDA_CHECK(cudaMemcpy(&foundAt, d_foundAt.ptr(), sizeof(IdxType), cudaMemcpyDeviceToHost))
+        startPos = foundAt + (foundAt != (IdxType)-1);
+        stillWork = stillWork || foundAt != (IdxType)-1;
+      }
+    }
+
+    if (!stillWork) break;
 
     CUDA_CHECK(cudaMemset(d_synchronizer.ptr(), 0, sizeof(unsigned int)))
     CUDA_CHECK(cudaMemset((void *)collisionHandlingData.d_doneWithIdx, 0, nCEThreadGroupsTotal * sizeof(IdxType)))
