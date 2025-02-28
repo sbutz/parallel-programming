@@ -19,48 +19,24 @@ static __device__ __forceinline__ IdxType tryAppendToSeedListIfStateFree(
   unsigned int otherState, IdxType pointIdx,
   IdxType ourClusterId
 ) {
-  int tid = threadIdx.x;
-  //printf("x: %u %u %d\n", pointIdx, ourClusterId, tid);
   bool stateLikelyFree = otherState == stateFree;
-  unsigned int stateLikelyFreeMask = __ballot_sync(__activemask(), stateLikelyFree);
-  
-  int lane = laneId();
-  int leader = __ffs(stateLikelyFreeMask) - 1;
-  
-  if (stateLikelyFreeMask) {
-    int nStateLikelyFree = __popc(stateLikelyFreeMask);
-    int leader = __ffs(stateLikelyFreeMask) - 1;
-    IdxType oldReserved;
-    if (lane == leader) oldReserved = atomicAdd(s_seedReserved, nStateLikelyFree);
-    oldReserved = __shfl_sync(stateLikelyFreeMask, 0, leader);
-    
-    int myLikelyOffset = __popc(stateLikelyFreeMask & ((1u << lane) - 1));
-    bool iCanWrite = oldReserved < maxSeedLength && myLikelyOffset < maxSeedLength - oldReserved;
-    bool iWillWrite = stateLikelyFree && iCanWrite;
-    if (iWillWrite) {
-      printf("%u\n", pointIdx);
+
+  if (stateLikelyFree) {
+    IdxType oldReserved = atomicAdd(s_seedReserved, 1);
+    bool iCanWrite = oldReserved < maxSeedLength;
+    if (iCanWrite) {
       otherState = atomicCAS(&pointStates[pointIdx], stateFree, stateReserved);
-      iWillWrite = otherState == stateFree;
-    }
-
-    unsigned int willWriteMask = __ballot_sync(stateLikelyFreeMask, iWillWrite);
-    int nWriting = __popc(willWriteMask);
-    if (nWriting > 0) {
-      int h;
-      if (lane == leader) h = atomicAdd(seedLength, nWriting);
-      h = __shfl_sync(stateLikelyFreeMask, h, leader);
-      int offset = __popc(willWriteMask & ((1u << lane) - 1));
-      //printf("%u %u %u\n", h, offset, *seedLength);
-      if (iWillWrite) {
-        seedList[h + offset] = pointIdx; seedClusterIds[h + offset] = ourClusterId;
+      if (otherState == stateFree) {
+        IdxType oldSeedLength = atomicAdd(seedLength, 1);
+        seedList[oldSeedLength] = pointIdx; seedClusterIds[oldSeedLength] = ourClusterId;
+      } else {
+        (void)atomicSub(s_seedReserved, 1);
       }
+    } else {
+      (void)atomicSub(s_seedReserved, 1);
     }
-    if (lane == leader) atomicSub(s_seedReserved, nStateLikelyFree - nWriting);
-
-    if (lane == leader) printf("xxx: %u\n", oldReserved);
   }
-  
-  
+
   return otherState;
 }
 
@@ -261,7 +237,7 @@ static __global__ void kernel_clusterExpansion(
     for (unsigned int i = threadIdx.x; i < nThreadGroupsPerBlock; i += stride) {
       collisionHandlingData.d_collisionMatrix[nThreadGroupsTotal * threadGroupIdx + i] = s_collisions[i];
     }
-/*
+
     __threadfence();
 
     if (threadIdx.x == 0) collisionHandlingData.d_doneWithIdx[threadGroupIdx] = ourPointIdx + 1;
@@ -295,7 +271,7 @@ static __global__ void kernel_clusterExpansion(
         }
       }
     }
-    */
+
   }
 }
 
@@ -378,13 +354,13 @@ void findClusters(
   float * xs, float * ys, IdxType n,
   IdxType coreThreshold, float rsq
 ) {
-  constexpr int nCEBlocks = 1;
-  constexpr int nCEThreadsPerBlock = 32 * 32;
+  constexpr int nCEBlocks = 6;
+  constexpr int nCEThreadsPerBlock = 1024;
   auto blockGeom = determineCEBlockGeometry(nCEBlocks, nCEThreadsPerBlock, coreThreshold);
   unsigned int nCEThreadGroupsPerBlock = blockGeom.nCEThreadGroupsPerBlock;
   unsigned int nCEThreadGroupsTotal = blockGeom.nCEThreadGroupsTotal;
   unsigned int sharedBytesPerBlock = blockGeom.requiredSharedBytes;
-  fprintf(stderr, "%u %u\n", nCEThreadGroupsTotal, sharedBytesPerBlock);
+
   IdxType * d_seedLists;
   IdxType * d_seedClusterIds;
   IdxType * d_seedLengths;
@@ -431,8 +407,8 @@ void findClusters(
     CUDA_CHECK(cudaMemset(d_syncCounter, 0, sizeof(unsigned int)))
     CUDA_CHECK(cudaMemset((void *)collisionHandlingData.d_doneWithIdx, 0, nCEThreadGroupsTotal * sizeof(IdxType)))
     kernel_clusterExpansion <<<
-      1, //dim3(1, nCEBlocks),
-      dim3(128,4), //dim3(nCEThreadsPerBlock / nCEThreadGroupsPerBlock, nCEThreadGroupsPerBlock),
+      dim3(1, nCEBlocks),
+      dim3(nCEThreadsPerBlock / nCEThreadGroupsPerBlock, nCEThreadGroupsPerBlock),
       sharedBytesPerBlock
     >>> (
       d_clusters, d_pointStates,
@@ -442,7 +418,6 @@ void findClusters(
     );
     CUDA_CHECK(cudaGetLastError())
     CUDA_CHECK(cudaDeviceSynchronize())
-    break;
   }
 }
 
