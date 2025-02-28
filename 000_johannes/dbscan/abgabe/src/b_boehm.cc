@@ -108,11 +108,20 @@ struct DbscanProfile {
   float timeTotal;
 };
 
+// get number of multiprocessors on device
+static int getNSm() {
+  int nSm;
+  CUDA_CHECK(cudaDeviceGetAttribute(&nSm, cudaDevAttrMultiProcessorCount, 0));
+  return nSm;
+}
+
 static auto runDbscan (
   DbscanProfile * profile,
   float const * h_x, float const * h_y, IdxType nDataPoints,
   IdxType coreThreshold, float r
 ) {
+  int nSm = getNSm();
+
 	cudaEvent_t start; CUDA_CHECK(cudaEventCreate(&start));
 	cudaEvent_t stop; CUDA_CHECK(cudaEventCreate(&stop));
 	CUDA_CHECK(cudaEventRecord(start));
@@ -129,6 +138,7 @@ static auto runDbscan (
   auto && d_clusters = ManagedDeviceArray<IdxType> (nDataPoints);
 
   findClusters(
+    nSm,
     d_pointStates.ptr(), d_clusters.ptr(), d_x.ptr(), d_y.ptr(), nDataPoints,
     coreThreshold, r * r
   );
