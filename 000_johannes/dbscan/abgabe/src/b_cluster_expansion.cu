@@ -361,29 +361,24 @@ void findClusters(
   unsigned int nCEThreadGroupsTotal = blockGeom.nCEThreadGroupsTotal;
   unsigned int sharedBytesPerBlock = blockGeom.requiredSharedBytes;
 
-  IdxType * d_seedLists;
-  IdxType * d_seedClusterIds;
-  IdxType * d_seedLengths;
-  unsigned int * d_syncCounter;
-  CUDA_CHECK(cudaMalloc(&d_seedLists, nCEThreadGroupsTotal * maxSeedLength * sizeof(IdxType)))
-  CUDA_CHECK(cudaMalloc(&d_seedClusterIds, nCEThreadGroupsTotal * maxSeedLength * sizeof(IdxType)))
-  CUDA_CHECK(cudaMalloc(&d_seedLengths, nCEThreadGroupsTotal * sizeof(IdxType)))
-  CUDA_CHECK(cudaMalloc(&d_syncCounter, sizeof(unsigned int)))
 
-  IdxType * d_foundAt;
-  CUDA_CHECK(cudaMalloc(&d_foundAt, sizeof(IdxType)))
+  auto && d_seedLists = ManagedDeviceArray<IdxType> (nCEThreadGroupsTotal * maxSeedLength);
+  auto && d_seedClusterIds = ManagedDeviceArray<IdxType> (nCEThreadGroupsTotal * maxSeedLength);
+  auto && d_seedLengths = ManagedDeviceArray<IdxType> (nCEThreadGroupsTotal);
+  auto && d_syncCounter = ManagedDeviceArray<unsigned int> (1);
+  auto && d_foundAt = ManagedDeviceArray<IdxType> (1);
 
   CollisionHandlingData collisionHandlingData;
   allocateDeviceMemory(&collisionHandlingData, nCEThreadGroupsTotal, n);
 
   CUDA_CHECK(cudaMemset(d_pointStates, 0, n * sizeof(unsigned int)))
   CUDA_CHECK(cudaMemset(d_clusters, 0, n * sizeof(IdxType)))
-  CUDA_CHECK(cudaMemset(d_seedLengths, 0, nCEThreadGroupsTotal * sizeof(IdxType)))
+  CUDA_CHECK(cudaMemset(d_seedLengths.ptr(), 0, nCEThreadGroupsTotal * sizeof(IdxType)))
 
   IdxType seedLengths [nCEThreadGroupsTotal];
   IdxType startPos = 0;
   for (;;) {
-    CUDA_CHECK(cudaMemcpy(seedLengths, d_seedLengths, nCEThreadGroupsTotal * sizeof(IdxType), cudaMemcpyDeviceToHost))
+    CUDA_CHECK(cudaMemcpy(seedLengths, d_seedLengths.ptr(), nCEThreadGroupsTotal * sizeof(IdxType), cudaMemcpyDeviceToHost))
     bool stillWork = false;
 
     for (int k = 0; k < nCEThreadGroupsTotal; ++k) {
@@ -392,10 +387,10 @@ void findClusters(
       } else if (startPos != (IdxType)-1) {
         IdxType foundAt = (IdxType)-1;
         kernel_refillSeed <<<1, 32>>> (
-          d_foundAt, d_seedLists, d_seedClusterIds, d_seedLengths, k, d_pointStates, d_clusters, n, startPos
+          d_foundAt.ptr(), d_seedLists.ptr(), d_seedClusterIds.ptr(), d_seedLengths.ptr(), k, d_pointStates, d_clusters, n, startPos
         );
         CUDA_CHECK(cudaGetLastError())
-        CUDA_CHECK(cudaMemcpy(&foundAt, d_foundAt, sizeof(IdxType), cudaMemcpyDeviceToHost))
+        CUDA_CHECK(cudaMemcpy(&foundAt, d_foundAt.ptr(), sizeof(IdxType), cudaMemcpyDeviceToHost))
         startPos = foundAt + (foundAt != (IdxType)-1);
         stillWork = stillWork || foundAt != (IdxType)-1;
       }
@@ -404,7 +399,7 @@ void findClusters(
 
     if (!stillWork) break;
 
-    CUDA_CHECK(cudaMemset(d_syncCounter, 0, sizeof(unsigned int)))
+    CUDA_CHECK(cudaMemset(d_syncCounter.ptr(), 0, sizeof(unsigned int)))
     CUDA_CHECK(cudaMemset((void *)collisionHandlingData.d_doneWithIdx, 0, nCEThreadGroupsTotal * sizeof(IdxType)))
     kernel_clusterExpansion <<<
       dim3(1, nCEBlocks),
@@ -413,7 +408,7 @@ void findClusters(
     >>> (
       d_clusters, d_pointStates,
       xs, ys, n,
-      d_seedLists, d_seedClusterIds, d_seedLengths, d_syncCounter, collisionHandlingData,
+      d_seedLists.ptr(), d_seedClusterIds.ptr(), d_seedLengths.ptr(), d_syncCounter.ptr(), collisionHandlingData,
       coreThreshold, rsq
     );
     CUDA_CHECK(cudaGetLastError())
