@@ -120,29 +120,27 @@ static auto runDbscan (
   auto && d_x = ManagedDeviceArray<float> (nDataPoints);
   auto && d_y = ManagedDeviceArray<float> (nDataPoints);
 
-  unsigned int * d_pointStates;
-  IdxType * d_clusters;
-  CollisionHandlingData collisionHandlingData;
   constexpr int nBlocks = 6;
-
-  allocateDeviceMemory(&d_pointStates, &d_clusters, &collisionHandlingData, nBlocks, nDataPoints);
 
   CUDA_CHECK(cudaMemcpy(d_x.ptr(), h_x, nDataPoints * sizeof(float), cudaMemcpyHostToDevice))
   CUDA_CHECK(cudaMemcpy(d_y.ptr(), h_y, nDataPoints * sizeof(float), cudaMemcpyHostToDevice))
 
+  auto && d_pointStates = ManagedDeviceArray<unsigned int> (nDataPoints);
+  auto && d_clusters = ManagedDeviceArray<IdxType> (nDataPoints);
+
   findClusters(
-    d_pointStates, d_clusters, d_x.ptr(), d_y.ptr(), nDataPoints,
-    collisionHandlingData, coreThreshold, r * r
+    d_pointStates.ptr(), d_clusters.ptr(), d_x.ptr(), d_y.ptr(), nDataPoints,
+    coreThreshold, r * r
   );
 
   std::vector<unsigned int> states(nDataPoints);
-  CUDA_CHECK(cudaMemcpy(states.data(), d_pointStates, nDataPoints * sizeof(unsigned int), cudaMemcpyDeviceToHost))
+  CUDA_CHECK(cudaMemcpy(states.data(), d_pointStates.ptr(), nDataPoints * sizeof(unsigned int), cudaMemcpyDeviceToHost))
 
   std::vector<signed char> isCore(nDataPoints); // avoid vector<bool>
   for (std::size_t i = 0; i < nDataPoints; ++i) isCore[i] = (states[i] & stateCore) != 0;
 
   std::vector<IdxType> clusters(nDataPoints);
-  CUDA_CHECK(cudaMemcpy(clusters.data(), d_clusters, nDataPoints * sizeof(IdxType), cudaMemcpyDeviceToHost))
+  CUDA_CHECK(cudaMemcpy(clusters.data(), d_clusters.ptr(), nDataPoints * sizeof(IdxType), cudaMemcpyDeviceToHost))
 
 	CUDA_CHECK(cudaEventRecord(stop));
   CUDA_CHECK(cudaEventSynchronize(stop));

@@ -152,7 +152,7 @@ static __global__ void kernel_handleCollisions(
 }
 
 static __device__ void sharedMemZero(
-  char * s_mem, IdxType nBytes
+  unsigned char * s_mem, IdxType nBytes
 ) {
   // zeroing one byte per thread is faster than one unsigned int per thread
   //   -- reason unclear, but may be related to memory bank conflicts
@@ -163,7 +163,6 @@ static __device__ void sharedMemZero(
     strideStart += blockDim.x * blockDim.y;
   }
   if (myOffset < nBytes - strideStart) s_mem [strideStart + myOffset] = 0;
-
 }
 
 static __device__ IdxType processPoints(
@@ -279,7 +278,7 @@ static __global__ void kernel_clusterExpansion(
   //   size in bytes: 4
   // -> Total size per thread group in bytes:
   //   [(nThreadGroupsTotal + 3) / 4 + max(coreThreshold, (blockDim.x + 31) / 32) + 1] * 4 bytes
-  extern __shared__ char sMem [];
+  extern __shared__ unsigned char sMem [];
   unsigned int sMemBytesPerThreadGroup = 4 * (
     (nThreadGroupsTotal + 3) / 4 +
     dhi_max(coreThreshold, (blockDim.x + 31) / 32) +
@@ -291,10 +290,10 @@ static __global__ void kernel_clusterExpansion(
     alignof(IdxType) == 4 &&
     sizeof(bool) == 1, ""
   );
-  bool * s_collisions        = (bool *)    (sMem                     + sMemBytesPerThreadGroup * threadIdx.y);
-  IdxType * s_neighborBuffer = (IdxType *) ((char *)s_collisions     + (nThreadGroupsTotal + 3) / 4 * 4);
+  bool * s_collisions        = (bool *)    (sMem                              + sMemBytesPerThreadGroup * threadIdx.y);
+  IdxType * s_neighborBuffer = (IdxType *) ((unsigned char *)s_collisions     + (nThreadGroupsTotal + 3) / 4 * 4);
   volatile IdxType * s_interWarpUnionize = s_neighborBuffer;
-  IdxType * s_neighborCount  = (IdxType *) ((char *)s_neighborBuffer + dhi_max(coreThreshold, (blockDim.x + 31) / 32) * 4);
+  IdxType * s_neighborCount  = (IdxType *) ((unsigned char *)s_neighborBuffer + dhi_max(coreThreshold, (blockDim.x + 31) / 32) * 4);
 
   // clear all shared memory
   sharedMemZero(sMem, sMemBytesPerThreadGroup * blockDim.y);
