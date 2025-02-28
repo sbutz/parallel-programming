@@ -396,6 +396,7 @@ void findClusters(
   unsigned int nCEThreadGroupsTotal = blockGeom.nCEThreadGroupsTotal;
   unsigned int sharedBytesPerBlock = blockGeom.requiredSharedBytes;
 
+<<<<<<< HEAD
 
   auto && d_seedLists = ManagedDeviceArray<IdxType> (nCEThreadGroupsTotal * maxSeedLength);
   auto && d_seedLengths = ManagedDeviceArray<IdxType> (nCEThreadGroupsTotal);
@@ -403,15 +404,54 @@ void findClusters(
   auto && d_continueAt = ManagedDeviceArray<IdxType> (1);
   auto && d_pointsUnderInspection = ManagedDeviceArray<IdxType> (nCEThreadGroupsTotal);
   auto && d_threadGroupClusterIds = ManagedDeviceArray<IdxType> (nCEThreadGroupsTotal);
+=======
+  IdxType * d_seedLists;
+  IdxType * d_seedClusterIds;
+  IdxType * d_seedLengths;
+  unsigned int * d_syncCounter;
+  CUDA_CHECK(cudaMalloc(&d_seedLists, nCEThreadGroupsTotal * maxSeedLength * sizeof(IdxType)))
+  CUDA_CHECK(cudaMalloc(&d_seedClusterIds, nCEThreadGroupsTotal * maxSeedLength * sizeof(IdxType)))
+  CUDA_CHECK(cudaMalloc(&d_seedLengths, nCEThreadGroupsTotal * sizeof(IdxType)))
+  CUDA_CHECK(cudaMalloc(&d_syncCounter, sizeof(unsigned int)))
+
+  IdxType * d_foundAt;
+  CUDA_CHECK(cudaMalloc(&d_foundAt, sizeof(IdxType)))
+>>>>>>> parent of 44d2883... Managed array, working
 
   auto && collisionHandlingData = CollisionHandlingData(nCEThreadGroupsTotal, n);
 
   CUDA_CHECK(cudaMemset(d_pointStates, 0, n * sizeof(unsigned int)))
   CUDA_CHECK(cudaMemset(d_clusters, 0, n * sizeof(IdxType)))
+<<<<<<< HEAD
   CUDA_CHECK(cudaMemset(d_seedLengths.ptr(), 0, nCEThreadGroupsTotal * sizeof(IdxType)))
   CUDA_CHECK(cudaMemset(d_continueAt.ptr(), 0, sizeof(IdxType)))
 
   std::vector<IdxType> h_seedLengths (nCEThreadGroupsTotal);
+=======
+  CUDA_CHECK(cudaMemset(d_seedLengths, 0, nCEThreadGroupsTotal * sizeof(IdxType)))
+
+  IdxType seedLengths [nCEThreadGroupsTotal];
+  IdxType startPos = 0;
+  for (;;) {
+    CUDA_CHECK(cudaMemcpy(seedLengths, d_seedLengths, nCEThreadGroupsTotal * sizeof(IdxType), cudaMemcpyDeviceToHost))
+    bool stillWork = false;
+
+    for (int k = 0; k < nCEThreadGroupsTotal; ++k) {
+      if (seedLengths[k]) {
+        stillWork = true;
+      } else if (startPos != (IdxType)-1) {
+        IdxType foundAt = (IdxType)-1;
+        kernel_refillSeed <<<1, 32>>> (
+          d_foundAt, d_seedLists, d_seedClusterIds, d_seedLengths, k, d_pointStates, d_clusters, n, startPos
+        );
+        CUDA_CHECK(cudaGetLastError())
+        CUDA_CHECK(cudaMemcpy(&foundAt, d_foundAt, sizeof(IdxType), cudaMemcpyDeviceToHost))
+        startPos = foundAt + (foundAt != (IdxType)-1);
+        stillWork = stillWork || foundAt != (IdxType)-1;
+      }
+    }
+    CUDA_CHECK(cudaGetLastError())
+>>>>>>> parent of 44d2883... Managed array, working
 
   int nIterations = 0;
   for (;;) {
@@ -424,7 +464,11 @@ void findClusters(
     CUDA_CHECK(cudaMemcpy(&continueAt, d_continueAt.ptr(), sizeof(IdxType), cudaMemcpyDeviceToHost))
     if (continueAt + 1 == 0) break;
 
+<<<<<<< HEAD
     CUDA_CHECK(cudaMemset(d_synchronizer.ptr(), 0, sizeof(unsigned int)))
+=======
+    CUDA_CHECK(cudaMemset(d_syncCounter, 0, sizeof(unsigned int)))
+>>>>>>> parent of 44d2883... Managed array, working
     CUDA_CHECK(cudaMemset((void *)collisionHandlingData.d_doneWithIdx, 0, nCEThreadGroupsTotal * sizeof(IdxType)))
     kernel_clusterExpansion <<<
       dim3(1, nCEBlocks),
@@ -433,10 +477,14 @@ void findClusters(
     >>> (
       d_clusters, d_pointStates,
       xs, ys, n,
+<<<<<<< HEAD
       d_seedLists.ptr(), d_seedLengths.ptr(),
       d_pointsUnderInspection.ptr(), d_threadGroupClusterIds.ptr(),
       d_synchronizer.ptr(),
       CollisionHandlingDataView{ collisionHandlingData },
+=======
+      d_seedLists, d_seedClusterIds, d_seedLengths, d_syncCounter, collisionHandlingData,
+>>>>>>> parent of 44d2883... Managed array, working
       coreThreshold, rsq
     );
     cudaMemcpy(h_seedLengths.data(), d_seedLengths.ptr(), nCEThreadGroupsTotal * sizeof(IdxType), cudaMemcpyDeviceToHost);
