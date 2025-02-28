@@ -32,58 +32,71 @@ def build_target(folder, target):
         check=True,
     )
 
+def profile(binary, n_points, n_clusters, kernel_name):
+    logger.info(f"Profiling ${binary}. n_points={n_points}, n_clusters={n_clusters}")
+    with tempfile.NamedTemporaryFile() as points, tempfile.NamedTemporaryFile() as medoids:
+        datagen(n_points, n_clusters, points)
+        report = NvProfReport(binary, [str(n_clusters), points.name, medoids.name])
+        return {
+            "binary": os.path.basename(binary),
+            "n_clusters": n_clusters,
+            "n_points": n_points,
+            "total_time": report.get_traced_value("PAM") / 1000,
+            "total_kernel_exec_time": report.get_kernel_exec_stats(kernel_name)["time"],
+            "total_kernel_launch_time": report.get_kernel_launch_stats()["time"],
+            "avg_kernel_exec_time": report.get_kernel_exec_stats(kernel_name)["avg"],
+            "avg_kernel_launch_time": report.get_kernel_launch_stats()["avg"],
+            "iterations": report.get_kernel_exec_stats(kernel_name)["instances"],
+            "memcpy_host_to_device_time": report.get_memcpy_to_device_stats()["time"],
+            "memcpy_device_to_host_time": report.get_memcpy_to_device_stats()["time"],
+            "cost": cost(points.name, medoids.name),
+        }
+
 def main(report_path):
     # Build binaries
     build_target("05_project/k_medoids", "all")
-    binaries = [
-        os.path.join(git_root, "05_project", "k_medoids", b)
-        #TODO: use all kernels
-        for b in [
-            "medoids.py",
-            #"build/01_pam",
-            #"build/02_pam_no_sqrt",
-            #"build/03_pam_2d",
-            #"build/04_pam_single_precision",
-            #"build/05_pam_intrinsics",
-            #"build/06_pam_no_pow",
-            #"build/07_pam_shmem",
-            #"build/08_pam_small_block",
-            "build/09_pam_end_early",
-            #"build/10_pam_next",
-            #"build/11_pam_matrix",
-        ]
-    ]
-    #TODO: increase
-    n_clusters = [3]
-    #TODO: increase
-    n_points = [10**2, 10**3]
-    #TODO: increase
-    iterations = range(1)
-    points_path = os.path.join(git_root, "05_project", "k_medoids", "build", "data.csv")
+
+    d = []
+    iterations = range(10)
     kernel_name = "swap_cost"
 
-    # Profile kernels
-    d = []
+    binaries = [
+        os.path.join(git_root, "05_project", "k_medoids", b)
+        for b in [
+            "build/01_pam",
+            "build/02_pam_no_sqrt",
+            "build/03_pam_2d",
+            "build/04_pam_single_precision",
+            "build/05_pam_intrinsics",
+            "build/06_pam_no_pow",
+            "build/07_pam_shmem",
+            "build/08_pam_small_block",
+        ]
+    ]
+    n_clusters = [3, 5, 10]
+    n_points = [10**2, 10**3, 10**4]
     for binary, n_point, n_cluster, _ in itertools.product(binaries, n_points, n_clusters, iterations):
-        with tempfile.NamedTemporaryFile() as points, tempfile.NamedTemporaryFile() as medoids:
-            datagen(n_point, n_cluster, points)
-            report = NvProfReport(binary, [str(n_cluster), points.name, medoids.name])
-            d.append(
-                {
-                    "binary": os.path.basename(binary),
-                    "n_clusters": n_cluster,
-                    "n_points": n_point,
-                    "total_time": report.get_traced_value("PAM") / 1000,
-                    "total_kernel_exec_time": report.get_kernel_exec_stats(kernel_name)["time"],
-                    "total_kernel_launch_time": report.get_kernel_launch_stats()["time"],
-                    "avg_kernel_exec_time": report.get_kernel_exec_stats(kernel_name)["avg"],
-                    "avg_kernel_launch_time": report.get_kernel_launch_stats()["avg"],
-                    "iterations": report.get_kernel_exec_stats(kernel_name)["instances"],
-                    "memcpy_host_to_device_time": report.get_memcpy_to_device_stats()["time"],
-                    "memcpy_device_to_host_time": report.get_memcpy_to_device_stats()["time"],
-                    "cost": cost(points_path, medoids.name),
-                }
-        )
+        # Distance Matrix used in python implementaiton is limited by memory
+        if binary.endswith(".py") and n_point > 3*10**4:
+            continue
+        d.append(profile(binary, n_point, n_cluster, kernel_name))
+
+    binaries = [
+        os.path.join(git_root, "05_project", "k_medoids", b)
+        for b in [
+            "medoids.py",
+            "build/09_pam_end_early",
+        ]
+    ]
+    n_clusters = [3, 5, 10]
+    n_points = [10**2, 10**3, 10**4, 10**5]
+    for binary, n_point, n_cluster, _ in itertools.product(binaries, n_points, n_clusters, iterations):
+        # Distance Matrix used in python implementaiton is limited by memory
+        if binary.endswith(".py") and n_point > 3*10**4:
+            continue
+        d.append(profile(binary, n_point, n_cluster, kernel_name))
+
+    # Aggregate Results
     df = pd.DataFrame(d)
     df = df.groupby(['binary', 'n_clusters', 'n_points']).mean().reset_index()
     df.to_csv(report_path, index=False)

@@ -37,11 +37,10 @@ KERNELS =	$(OBJDIR)/01_pam \
 	$(OBJDIR)/07_pam_shmem \
 	$(OBJDIR)/08_pam_small_block \
 	$(OBJDIR)/09_pam_end_early \
-	$(OBJDIR)/10_pam_next \
-	$(OBJDIR)/11_pam_matrix
-KERNELS = $(OBJDIR)/09_pam_end_early
+	$(OBJDIR)/10_pam_matrix
+#KERNELS = $(OBJDIR)/09_pam_end_early
 
-$(OBJDIR)/data.csv: scripts/datagen.py
+$(OBJDIR)/data.csv:
 	python3 scripts/datagen.py > $(OBJDIR)/data.csv
 
 DATASETS = $(OBJDIR)/data.csv
@@ -53,9 +52,10 @@ N_CLUSTERS=3
 run: all ./scripts/visualize.py
 	@mkdir -p $(PLOTDIR)
 
-	./medoids.py $(N_CLUSTERS) $(OBJDIR)/data.csv $(OBJDIR)/medoids.csv
-	./scripts/cost.py $(OBJDIR)/data.csv $(OBJDIR)/medoids.csv
-	./scripts/visualize.py $(OBJDIR)/data.csv $(OBJDIR)/medoids.csv $(PLOTDIR)/kmedoids-py.png
+	# Only working if sklearn is installed
+	#./medoids.py $(N_CLUSTERS) $(OBJDIR)/data.csv $(OBJDIR)/medoids.csv
+	#./scripts/cost.py $(OBJDIR)/data.csv $(OBJDIR)/medoids.csv
+	#./scripts/visualize.py $(OBJDIR)/data.csv $(OBJDIR)/medoids.csv $(PLOTDIR)/kmedoids-py.png
 
 	for kernel in $(KERNELS); do \
 		echo "Running $$kernel"; \
@@ -83,6 +83,7 @@ $(REPORTDIR)/perf.csv: ./scripts/perf.py
 	python3 ./scripts/perf.py $(REPORTDIR)/perf.csv
 
 plots: $(REPORTDIR)/perf.csv ./scripts/plots.py
+	@mkdir -p $(PLOTDIR)
 	python3 ./scripts/plots.py $(REPORTDIR)/perf.csv
 
 .PHONY.: clean
