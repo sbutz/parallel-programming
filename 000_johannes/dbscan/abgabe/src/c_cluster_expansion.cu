@@ -6,6 +6,31 @@
 #include <cuda.h>
 #include <vector>
 
+static __device__ __forceinline__ unsigned int laneId() {
+  unsigned ret;
+  asm volatile("mov.u32 %0, %laneid;" : "=r"(ret));
+  return ret;
+}
+
+static constexpr __host__ __device__ __forceinline__ IdxType dhi_max(IdxType a, IdxType b) {
+  return a > b ? a : b;
+}
+
+
+static __device__ void sharedMemZero(
+  unsigned char * s_mem, IdxType nBytes
+) {
+  // zeroing one byte per thread is faster than one unsigned int per thread
+  //   -- reason unclear, but may be related to memory bank conflicts
+  IdxType strideStart = 0;
+  IdxType myOffset = blockDim.x * threadIdx.y + threadIdx.x;
+  while (nBytes - strideStart > blockDim.x * blockDim.y) {
+    s_mem [strideStart + myOffset] = 0;
+    strideStart += blockDim.x * blockDim.y;
+  }
+  if (myOffset < nBytes - strideStart) s_mem [strideStart + myOffset] = 0;
+}
+
 static __device__ IdxType unionizeClusters(
   IdxType * clusters,
   IdxType cluster1,
@@ -33,7 +58,7 @@ static __device__ IdxType unionizeClusters(
     }
     top2 = child;
 
-    if (top1 == top2) break; // necessary?
+    if (top1 == top2) break;
     if (top1 > top2) { IdxType tmp = top2; top2 = top1; top1 = tmp; }
 
     IdxType old = atomicCAS(&clusters[top2], 0, top1 - top2);
@@ -41,12 +66,6 @@ static __device__ IdxType unionizeClusters(
     child = top2;
   }
   return top1;
-}
-
-static __device__ __forceinline__ unsigned int laneId() {
-  unsigned ret;
-  asm volatile("mov.u32 %0, %laneid;" : "=r"(ret));
-  return ret;
 }
 
 static __device__ auto tryAppendToNeighborBuffer(
@@ -72,97 +91,6 @@ static __device__ auto tryAppendToNeighborBuffer(
     bool maxLengthReached;
   }; 
   return Result { shouldAppend, oldNeighborCount + nNeighbors >= maxLength };
-}
-
-static constexpr __host__ __device__ __forceinline__ IdxType dhi_max(IdxType a, IdxType b) {
-  return a > b ? a : b;
-}
-
-static __device__ IdxType unionizeWithinThreadGroup(
-  volatile IdxType * s_interWarpUnionize,
-  IdxType * clusters,
-  IdxType myClusterId
-) {
-  // unionize within every warp
-  for (unsigned int i = 1; i < 32; i <<= 1) {
-    IdxType otherClusterId = __shfl_down_sync(0xffffffff, myClusterId, i);
-    if (!(laneId() & ((i << 1) - 1))) myClusterId = unionizeClusters(clusters, myClusterId, otherClusterId);
-  }
-  myClusterId = __shfl_sync(0xffffffff, myClusterId, 0);
-
-  __syncthreads();
-
-  // unionize among warps within thread group
-  unsigned int nValuesToUnionize = (blockDim.x + 31) / 32;
-  if (nValuesToUnionize > 1) {
-    int lane = laneId();
-    int wid = threadIdx.x / 32;
-    if (lane == 0) s_interWarpUnionize[threadIdx.x / 32] = myClusterId;
-    while ((wid + 1) * 32 <= nValuesToUnionize) {
-      __syncthreads();
-      IdxType myValue = threadIdx.x < nValuesToUnionize ? s_interWarpUnionize[threadIdx.x] : (IdxType)-1;
-      unsigned int limit = nValuesToUnionize - wid * 32;
-      if (limit > 32) limit = 32;
-      for (unsigned int i = 1; i < limit; i <<= 1) {
-        IdxType otherValue = __shfl_down_sync(0xffffffff, myValue, i);
-        if (
-          (otherValue + 1) &&
-          !(laneId() & ((i << 1) - 1))
-        ) myValue = unionizeClusters(clusters, myValue, otherValue);
-      }
-      nValuesToUnionize = (nValuesToUnionize + 31) / 32;
-      if (laneId() == 0) s_interWarpUnionize[threadIdx.x / 32] == myValue;
-      if (nValuesToUnionize == 1) break;
-    }
-    __syncthreads();
-    myClusterId = s_interWarpUnionize[0];
-  }
-
-  return myClusterId;
-}
-
-static __global__ void kernel_handleCollisions(
-  unsigned int * collisionMatrix,
-  IdxType * clusters,
-  bool * coreMarkers,
-  IdxType n,
-  IdxType beginStep,
-  IdxType nThreadGroupsTotal
-) {
-  unsigned int collisionPitch = (nThreadGroupsTotal + 31) / 32;
-  unsigned int tid = blockDim.x * blockIdx.x + threadIdx.x;
-  unsigned int nRequiredThreads = nThreadGroupsTotal * nThreadGroupsTotal;
-  if (tid < nRequiredThreads) {
-    unsigned int r = tid / nThreadGroupsTotal;
-    unsigned int c = tid % nThreadGroupsTotal;
-
-    bool collisionRToC = collisionMatrix[r * collisionPitch + c / 32] & (1u << (c % 32));
-    bool collisionCToR = collisionMatrix[c * collisionPitch + r / 32] & (1u << (r % 32));
-    if (c < r && collisionRToC && collisionCToR) {
-      // both points are core
-      (void)unionizeClusters(clusters, beginStep + r, beginStep + c);
-    } else if (c < r && collisionRToC) {
-      // r is core
-      clusters[beginStep + c] = r - c;
-    } else if (c < r && collisionCToR) {
-      // c is core
-      clusters[beginStep + r] = c - r;
-    }
-  }
-}
-
-static __device__ void sharedMemZero(
-  unsigned char * s_mem, IdxType nBytes
-) {
-  // zeroing one byte per thread is faster than one unsigned int per thread
-  //   -- reason unclear, but may be related to memory bank conflicts
-  IdxType strideStart = 0;
-  IdxType myOffset = blockDim.x * threadIdx.y + threadIdx.x;
-  while (nBytes - strideStart > blockDim.x * blockDim.y) {
-    s_mem [strideStart + myOffset] = 0;
-    strideStart += blockDim.x * blockDim.y;
-  }
-  if (myOffset < nBytes - strideStart) s_mem [strideStart + myOffset] = 0;
 }
 
 static __device__ IdxType processPoints(
@@ -217,6 +145,49 @@ static __device__ IdxType processPoints(
     for (int i = threadIdx.x; i < coreThreshold; i += stride) {
       markAsCandidate(s_neighborBuffer[i]);
     }
+  }
+
+  return myClusterId;
+}
+
+static __device__ IdxType unionizeWithinThreadGroup(
+  volatile IdxType * s_interWarpUnionize,
+  IdxType * clusters,
+  IdxType myClusterId
+) {
+  // unionize within every warp
+  for (unsigned int i = 1; i < 32; i <<= 1) {
+    IdxType otherClusterId = __shfl_down_sync(0xffffffff, myClusterId, i);
+    if (!(laneId() & ((i << 1) - 1))) myClusterId = unionizeClusters(clusters, myClusterId, otherClusterId);
+  }
+  myClusterId = __shfl_sync(0xffffffff, myClusterId, 0);
+
+  __syncthreads();
+
+  // unionize among warps within thread group
+  unsigned int nValuesToUnionize = (blockDim.x + 31) / 32;
+  if (nValuesToUnionize > 1) {
+    int lane = laneId();
+    int wid = threadIdx.x / 32;
+    if (lane == 0) s_interWarpUnionize[threadIdx.x / 32] = myClusterId;
+    while ((wid + 1) * 32 <= nValuesToUnionize) {
+      __syncthreads();
+      IdxType myValue = threadIdx.x < nValuesToUnionize ? s_interWarpUnionize[threadIdx.x] : (IdxType)-1;
+      unsigned int limit = nValuesToUnionize - wid * 32;
+      if (limit > 32) limit = 32;
+      for (unsigned int i = 1; i < limit; i <<= 1) {
+        IdxType otherValue = __shfl_down_sync(0xffffffff, myValue, i);
+        if (
+          (otherValue + 1) &&
+          !(laneId() & ((i << 1) - 1))
+        ) myValue = unionizeClusters(clusters, myValue, otherValue);
+      }
+      nValuesToUnionize = (nValuesToUnionize + 31) / 32;
+      if (laneId() == 0) s_interWarpUnionize[threadIdx.x / 32] == myValue;
+      if (nValuesToUnionize == 1) break;
+    }
+    __syncthreads();
+    myClusterId = s_interWarpUnionize[0];
   }
 
   return myClusterId;
@@ -339,6 +310,36 @@ static __global__ void kernel_clusterExpansion(
   __syncthreads();
 
   writeCollisionsToGlobalMemory(collisionMatrix, s_collisions, nThreadGroupsTotal);
+}
+
+static __global__ void kernel_handleCollisions(
+  unsigned int * collisionMatrix,
+  IdxType * clusters,
+  bool * coreMarkers,
+  IdxType n,
+  IdxType beginStep,
+  IdxType nThreadGroupsTotal
+) {
+  unsigned int collisionPitch = (nThreadGroupsTotal + 31) / 32;
+  unsigned int tid = blockDim.x * blockIdx.x + threadIdx.x;
+  unsigned int nRequiredThreads = nThreadGroupsTotal * nThreadGroupsTotal;
+  if (tid < nRequiredThreads) {
+    unsigned int r = tid / nThreadGroupsTotal;
+    unsigned int c = tid % nThreadGroupsTotal;
+
+    bool collisionRToC = collisionMatrix[r * collisionPitch + c / 32] & (1u << (c % 32));
+    bool collisionCToR = collisionMatrix[c * collisionPitch + r / 32] & (1u << (r % 32));
+    if (c < r && collisionRToC && collisionCToR) {
+      // both points are core
+      (void)unionizeClusters(clusters, beginStep + r, beginStep + c);
+    } else if (c < r && collisionRToC) {
+      // r is core
+      clusters[beginStep + c] = r - c;
+    } else if (c < r && collisionCToR) {
+      // c is core
+      clusters[beginStep + r] = c - r;
+    }
+  }
 }
 
 static __global__ void kernel_unionize(IdxType * clusters, IdxType n) {
