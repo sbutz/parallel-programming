@@ -4,10 +4,10 @@
 #include <cuda_runtime.h>
 #include <iostream>
 
-constexpr int findNextUnvisitedNaivePolicy = 1;
-constexpr int findNextUnvisitedSuccessivePolicy = 2;
-constexpr int findNextUnvisitedSuccessiveMultWarpPolicy = 3;
-constexpr int findNextUnvisitedSuccessiveSimplifiedPolicy = 4;
+constexpr int findNextUnvisitedCoreNaivePolicy = 1;
+constexpr int findNextUnvisitedCoreSuccessivePolicy = 2;
+constexpr int findNextUnvisitedCoreSuccessiveMultWarpPolicy = 3;
+constexpr int findNextUnvisitedCoreSuccessiveSimplifiedPolicy = 4;
 
 constexpr int graphTexturePolicy = 3;
 
@@ -77,7 +77,7 @@ static __global__ void kernel_bfs_texture(
             unsigned int destinationVisited = d_visited[destination];
             if(destinationVisited <= 1) {
                 d_visited[destination] = visitedTag;
-                if (destinationVisited == 0) appendToFrontier(cntNewFrontier, newFrontier, destination);
+                if (destinationVisited == 1) appendToFrontier(cntNewFrontier, newFrontier, destination);
             }
         }
     };
@@ -128,10 +128,10 @@ struct FindComponent<graphTexturePolicy> {
 };
 
 // ******************************************************************************************************************************
-// markNonCore: helper function for initializing clusters array by marking non-core elements
+// markCoreUnvisited: helper function for initializing clusters array by marking unvisited core elements
 // ******************************************************************************************************************************
 
-static __global__ void kernel_markNonCore(
+static __global__ void kernel_markCoreUnvisited(
     IdxType * d_visited,
     IdxType * d_d_startIndices,
     IdxType nVertices
@@ -139,15 +139,15 @@ static __global__ void kernel_markNonCore(
     unsigned int tid = blockDim.x * blockIdx.x + threadIdx.x;
 
     if (tid < nVertices) {
-        if (d_d_startIndices[tid + 1] - d_d_startIndices[tid] == 0) {
+        if (d_d_startIndices[tid + 1] - d_d_startIndices[tid] != 0) {
             d_visited[tid] = 1;
         }
     }    
 }
 
-static void markNonCore(IdxType * d_visited, DNeighborGraph const * graph) {
+static void markCoreUnvisited(IdxType * d_visited, DNeighborGraph const * graph) {
     constexpr int nThreadsPerBlock = 128;
-    kernel_markNonCore <<<
+    kernel_markCoreUnvisited <<<
         dim3((graph->nVertices + nThreadsPerBlock - 1) / nThreadsPerBlock),
         dim3(nThreadsPerBlock)    
     >>> (
@@ -159,27 +159,27 @@ static void markNonCore(IdxType * d_visited, DNeighborGraph const * graph) {
 }
 
 // ******************************************************************************************************************************
-// FindNextUnvisited:
-//   template struct, FindNextUnvisited<FrontierPolicyKey>::findNextUnvisited finds next unvisited (core) node
+// FindNextUnvisitedCore:
+//   template struct, FindNextUnvisitedCore<FrontierPolicyKey>::findNextUnvisitedCore finds next unvisited (core) node
 // ******************************************************************************************************************************
 
-template <int FindNextUnvisitedPolicyKey>
-struct FindNextUnvisited {
+template <int FindNextUnvisitedCorePolicyKey>
+struct FindNextUnvisitedCore {
     struct Result {
         bool wasFound;
         IdxType idx;
     };
-    static Result findNextUnvisited(
+    static Result findNextUnvisitedCore(
         IdxType * d_resultBuffer, IdxType * d_visited, IdxType nVertices, IdxType startIdx
     );
 };
 
 // ******************************************************************************************************************************
-// FindNextUnvisited<findNextUnvisitedNaivePolicy>
+// FindNextUnvisitedCore<findNextUnvisitedCoreNaivePolicy>
 //   naive, but simple way of finding next unvisited (core) node
 // ******************************************************************************************************************************
 
-static __global__ void kernel_findUnvisitedNaive(
+static __global__ void kernel_findUnvisitedCoreNaive(
     IdxType * outBuffer,
     IdxType * d_visited,
     IdxType nVertices,
@@ -189,7 +189,7 @@ static __global__ void kernel_findUnvisitedNaive(
 
     // TODO: This is bad. We should start at startPos and finish early when vertex has been found.
     if (tid < nVertices) {
-        if (!d_visited[tid]) {
+        if (d_visited[tid] == 1) {
             outBuffer[0] = 1; // true
             outBuffer[1] = tid;
         }
@@ -197,13 +197,13 @@ static __global__ void kernel_findUnvisitedNaive(
 }
 
 template <>
-auto FindNextUnvisited<findNextUnvisitedNaivePolicy>::findNextUnvisited(
+auto FindNextUnvisitedCore<findNextUnvisitedCoreNaivePolicy>::findNextUnvisitedCore(
     IdxType * d_resultBuffer, IdxType * d_visited, IdxType nVertices, IdxType startIdx
-) -> FindNextUnvisited<findNextUnvisitedNaivePolicy>::Result {
+) -> FindNextUnvisitedCore<findNextUnvisitedCoreNaivePolicy>::Result {
     constexpr int nThreadsPerBlock = 128;
     CUDA_CHECK(cudaMemset(d_resultBuffer, 0, 2 * sizeof(IdxType)))
 
-    kernel_findUnvisitedNaive <<<
+    kernel_findUnvisitedCoreNaive <<<
         (nVertices + nThreadsPerBlock - 1) / nThreadsPerBlock,
         nThreadsPerBlock
     >>> (d_resultBuffer, d_visited, nVertices, startIdx);
@@ -215,11 +215,11 @@ auto FindNextUnvisited<findNextUnvisitedNaivePolicy>::findNextUnvisited(
 }
 
 // ******************************************************************************************************************************
-// FindNextUnvisited<findNextUnvisitedSuccessivePolicy>
+// FindNextUnvisitedCore<findNextUnvisitedCoreSuccessivePolicy>
 //   start over where you stopped, rather than at the beginning
 // ******************************************************************************************************************************
 
-static __global__ void kernel_findUnvisitedSuccessive(
+static __global__ void kernel_findUnvisitedCoreSuccessive(
     IdxType * outBuffer,
     IdxType * d_visited,
     IdxType nVertices,
@@ -233,7 +233,7 @@ static __global__ void kernel_findUnvisitedSuccessive(
 
     IdxType contribution;
     for (;;) {
-        contribution = idx < startPos || idx >= nVertices || !!d_visited[idx] ?
+        contribution = idx < startPos || idx >= nVertices || d_visited[idx] != 1?
             maxIdxType : idx;
 
         #pragma unroll
@@ -253,15 +253,15 @@ static __global__ void kernel_findUnvisitedSuccessive(
 }
 
 template <>
-auto FindNextUnvisited<findNextUnvisitedSuccessivePolicy>::findNextUnvisited(
+auto FindNextUnvisitedCore<findNextUnvisitedCoreSuccessivePolicy>::findNextUnvisitedCore(
     IdxType * d_resultBuffer, IdxType * d_visited, IdxType nVertices, IdxType startIdx
-) -> FindNextUnvisited<findNextUnvisitedSuccessivePolicy>::Result {
+) -> FindNextUnvisitedCore<findNextUnvisitedCoreSuccessivePolicy>::Result {
     constexpr int nThreadsPerBlock = 32;
     constexpr int blocks = 1;
     constexpr IdxType maxIdxType = (IdxType)0 - (IdxType)1;
 
     IdxType localBuffer;
-    kernel_findUnvisitedSuccessive <<<
+    kernel_findUnvisitedCoreSuccessive <<<
         blocks, nThreadsPerBlock
     >>> (d_resultBuffer, d_visited, nVertices, startIdx);
 
@@ -271,11 +271,11 @@ auto FindNextUnvisited<findNextUnvisitedSuccessivePolicy>::findNextUnvisited(
 }
 
 // ******************************************************************************************************************************
-// FindNextUnvisited<findNextUnvisitedSuccessiveSimplifiedPolicy>
+// FindNextUnvisitedCore<findNextUnvisitedCoreSuccessiveSimplifiedPolicy>
 //   __ballot_sync rather than __shfl_sync
 // ******************************************************************************************************************************
 
-static __global__ void kernel_findUnvisitedSuccessiveSimplified(
+static __global__ void kernel_findUnvisitedCoreSuccessiveSimplified(
     IdxType * outBuffer,
     IdxType * d_visited,
     IdxType nVertices,
@@ -285,7 +285,7 @@ static __global__ void kernel_findUnvisitedSuccessiveSimplified(
     IdxType result = (IdxType)-1;
     for (IdxType strideIdx = startPos / wrp; strideIdx <= ((nVertices - 1) / wrp); ++strideIdx) {
         IdxType idx = strideIdx * wrp + threadIdx.x;
-        int unvisitedMask = __ballot_sync(0xffffffff, idx >= startPos && idx < nVertices && !d_visited[idx]);
+        int unvisitedMask = __ballot_sync(0xffffffff, idx >= startPos && idx < nVertices && d_visited[idx] == 1);
         if (unvisitedMask != 0) {
             result = strideIdx * wrp + __ffs(unvisitedMask) - 1;
             break;
@@ -295,9 +295,9 @@ static __global__ void kernel_findUnvisitedSuccessiveSimplified(
 }
 
 template <>
-auto FindNextUnvisited<findNextUnvisitedSuccessiveSimplifiedPolicy>::findNextUnvisited(
+auto FindNextUnvisitedCore<findNextUnvisitedCoreSuccessiveSimplifiedPolicy>::findNextUnvisitedCore(
     IdxType * d_resultBuffer, IdxType * d_visited, IdxType nVertices, IdxType startIdx
-) -> FindNextUnvisited<findNextUnvisitedSuccessiveSimplifiedPolicy>::Result {
+) -> FindNextUnvisitedCore<findNextUnvisitedCoreSuccessiveSimplifiedPolicy>::Result {
     constexpr int nThreadsPerBlock = 32;
     constexpr int blocks = 1;
     constexpr IdxType maxIdxType = (IdxType)0 - (IdxType)1;
@@ -305,7 +305,7 @@ auto FindNextUnvisited<findNextUnvisitedSuccessiveSimplifiedPolicy>::findNextUnv
     if (startIdx >= nVertices) return Result{false, 0};
 
     IdxType localBuffer;
-    kernel_findUnvisitedSuccessiveSimplified <<<
+    kernel_findUnvisitedCoreSuccessiveSimplified <<<
         blocks, nThreadsPerBlock
     >>> (d_resultBuffer, d_visited, nVertices, startIdx);
 
@@ -315,11 +315,11 @@ auto FindNextUnvisited<findNextUnvisitedSuccessiveSimplifiedPolicy>::findNextUnv
 }
 
 // ******************************************************************************************************************************
-// FindNextUnvisited<findNextUnvisitedSuccessiveMultWarpPolicy>
+// FindNextUnvisitedCore<findNextUnvisitedCoreSuccessiveMultWarpPolicy>
 //   __ballot_sync rather than __shfl_sync, employ several warps
 // ******************************************************************************************************************************
 
-static __global__ void kernel_findUnvisitedSuccessiveMultWarp(
+static __global__ void kernel_findUnvisitedCoreSuccessiveMultWarp(
     IdxType * outBuffer,
     IdxType * d_visited,
     IdxType nVertices,
@@ -345,7 +345,7 @@ static __global__ void kernel_findUnvisitedSuccessiveMultWarp(
     for (;;) {
         // ! TODO: this may overflow
         IdxType idx = strideStartIdx + tid;
-        int unvisitedMask = __ballot_sync(0xffffffff, idx >= startPos && idx < nVertices && !d_visited[idx]);
+        int unvisitedMask = __ballot_sync(0xffffffff, idx >= startPos && idx < nVertices && d_visited[idx] == 1);
 
         if (lane == 0) contributions[wid] = unvisitedMask ? strideStartIdx + wrp * wid + __ffs(unvisitedMask) - 1 : maxIdxType;
 
@@ -376,15 +376,15 @@ static __global__ void kernel_findUnvisitedSuccessiveMultWarp(
 }
 
 template <>
-auto FindNextUnvisited<findNextUnvisitedSuccessiveMultWarpPolicy>::findNextUnvisited(
+auto FindNextUnvisitedCore<findNextUnvisitedCoreSuccessiveMultWarpPolicy>::findNextUnvisitedCore(
     IdxType * d_resultBuffer, IdxType * d_visited, IdxType nVertices, IdxType startIdx
-) -> FindNextUnvisited<findNextUnvisitedSuccessiveMultWarpPolicy>::Result {
+) -> FindNextUnvisitedCore<findNextUnvisitedCoreSuccessiveMultWarpPolicy>::Result {
     constexpr int nThreadsPerBlock = 2 * 32;
     constexpr int blocks = 1;
     constexpr IdxType maxIdxType = (IdxType)0 - (IdxType)1;
 
     IdxType localBuffer;
-    kernel_findUnvisitedSuccessiveMultWarp <<<
+    kernel_findUnvisitedCoreSuccessiveMultWarp <<<
         dim3(blocks), dim3(nThreadsPerBlock)
     >>> (d_resultBuffer, d_visited, nVertices, startIdx);
     CUDA_CHECK(cudaGetLastError())
@@ -402,7 +402,7 @@ auto FindNextUnvisited<findNextUnvisitedSuccessiveMultWarpPolicy>::findNextUnvis
 // findAllComponents: find all the clusters
 // ******************************************************************************************************************************
 
-template <int FindNextUnvisitedPolicyKey>
+template <int FindNextUnvisitedCorePolicyKey>
 static void findAllComponents(
     int nSm,
     IdxType * d_visited,
@@ -426,17 +426,17 @@ static void findAllComponents(
     ))
     CUDA_CHECK(cudaBindTextureToArray(startIndicesTexture, texArray))
 
-    profile->timeMarkNonCore = runAndMeasureCuda(markNonCore, d_visited, graph);
+    profile->timeMarkNonCore = runAndMeasureCuda(markCoreUnvisited, d_visited, graph);
     profile->timeFindComponents = runAndMeasureCuda([&]{
         IdxType nIterations = 0;
         IdxType startIdx = 1;
         for (;;) {
-            auto nextUnvisited = FindNextUnvisited<FindNextUnvisitedPolicyKey>::findNextUnvisited(
+            auto nextUnvisitedCore = FindNextUnvisitedCore<FindNextUnvisitedCorePolicyKey>::findNextUnvisitedCore(
                 d_resultBuffer.ptr(), d_visited, graph->nVertices, startIdx
             );
-            if (!nextUnvisited.wasFound) break;
-            FindComponent<graphTexturePolicy>::findComponent(nSm, d_visited, &fd, graph, nextUnvisited.idx, nextFreeTag);
-            startIdx = nextUnvisited.idx + 1;
+            if (!nextUnvisitedCore.wasFound) break;
+            FindComponent<graphTexturePolicy>::findComponent(nSm, d_visited, &fd, graph, nextUnvisitedCore.idx, nextFreeTag);
+            startIdx = nextUnvisitedCore.idx + 1;
             ++nextFreeTag;
             ++nIterations;
         }
@@ -449,5 +449,5 @@ void findAllComponents(
     FindComponentsProfilingData * profile,
     DNeighborGraph const * graph
 ) {
-    findAllComponents<findNextUnvisitedSuccessivePolicy>(nSm, d_visited, profile, graph);
+    findAllComponents<findNextUnvisitedCoreSuccessivePolicy>(nSm, d_visited, profile, graph);
 }
