@@ -10,7 +10,7 @@
 #include <cuda_runtime.h>
 #include "cuda_helpers.h"
 
-char const * usageText = "Usage: andrade input_file n r [w] [iterations]\n";
+char const * usageText = "Usage: a_andrade input_file n r [w] [iterations]\n";
 
 struct Config {
   char const * inputFilePath;

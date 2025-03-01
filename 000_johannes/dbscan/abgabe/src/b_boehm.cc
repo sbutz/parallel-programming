@@ -9,16 +9,15 @@
 #include <cuda_runtime.h>
 #include "cuda_helpers.h"
 
-char const * usageText = "Usage: b_boehm input_file n r [w]\n";
+char const * usageText = "Usage: b_boehm input_file n r [w] [iterations]\n";
 
 struct Config {
   char const * inputFilePath;
   unsigned int n;
   float r;
   bool performWarmup;
-  bool checkGraph;
+  int nIterations;
 };
-
 
 void abortWithUsageMessage() {
 	std::cerr << usageText;
@@ -28,7 +27,7 @@ void abortWithUsageMessage() {
 static Config parseCommandLineArguments(int argc, char * argv []) {
 	Config config {};
 
-	if (argc < 4 || argc > 5) abortWithUsageMessage();
+	if (argc < 4 || argc > 6) abortWithUsageMessage();
 
   config.inputFilePath = !strcmp("--", argv[1]) ? nullptr : argv[1];
   config.n = strtol(argv[2], nullptr, 10);
@@ -36,15 +35,23 @@ static Config parseCommandLineArguments(int argc, char * argv []) {
 
   if (config.n <= 0 || config.r <= 0.0f) abortWithUsageMessage();
 
-  if (argc == 5) {
+  if (argc >= 5) {
     char const * argstr = argv[4];
   	for (size_t j = 0; argstr[j]; ++j) {
 	  	switch (argstr[j]) {
         case 'w': {
           config.performWarmup = true;
         } break;
+        default: abortWithUsageMessage;
       }
     }
+  }
+
+  if (argc >= 6) {
+    config.nIterations = strtol(argv[5], nullptr, 10);
+    if (config.nIterations <= 0) abortWithUsageMessage ();
+  } else {
+    config.nIterations = 1;
   }
 
   return config;
@@ -104,7 +111,7 @@ void jsonPrintUnsignedIntegerVector(std::vector<T> const & vec) {
 	printf(" ]");
 }
 
-struct DbscanProfile {
+struct DbscanProfilingData {
   float timeTotal;
 };
 
@@ -116,7 +123,7 @@ static int getNSm() {
 }
 
 static auto runDbscan (
-  DbscanProfile * profile,
+  DbscanProfilingData * profile,
   float const * h_x, float const * h_y, IdxType nDataPoints,
   IdxType coreThreshold, float r
 ) {
@@ -164,8 +171,6 @@ static auto runDbscan (
 }
 
 int main (int argc, char * argv []) {
-  DbscanProfile profile = {};
-
   Config config = parseCommandLineArguments(argc, argv);
 
   auto a = std::vector<float> {};
@@ -179,19 +184,38 @@ int main (int argc, char * argv []) {
   }
   if (config.performWarmup) warmup();
 
-  auto res = runDbscan(&profile, a.data(), b.data(), nDataPoints, config.n, config.r);
+  std::vector<DbscanProfilingData> profiles {};
+
+  std::vector<signed char> isCore {};
+  std::vector<IdxType> clusters {};
+  for (int i = 0;; ++i) {
+    DbscanProfilingData profile = {};
+    auto res = runDbscan(&profile, a.data(), b.data(), nDataPoints, config.n, config.r);
+    profiles.push_back(profile);
+    if (i < config.nIterations - 1) continue;
+
+    isCore = std::move(res.isCore);
+    clusters = std::move(res.clusters);
+    break;
+  }
 
   // print JSON output
   std::cout << "{\n";
     std::cout << "\"output\": {\n";
       std::cout << "\"x\": "; jsonPrintFloatAry(a.data(), a.size()); std::cout << ",\n";
       std::cout << "\"y\": "; jsonPrintFloatAry(b.data(), b.size()); std::cout << ",\n";
-      std::cout << "\"is_core\": "; jsonPrintUnsignedIntegerVector(res.isCore); std::cout << ",\n";
-      std::cout << "\"cluster_id\": "; jsonPrintUnsignedIntegerVector(res.clusters); std::cout << "\n";
+      std::cout << "\"is_core\": "; jsonPrintUnsignedIntegerVector(isCore); std::cout << ",\n";
+      std::cout << "\"cluster_id\": "; jsonPrintUnsignedIntegerVector(clusters); std::cout << "\n";
      std::cout << "},\n";
-    std::cout << "\"profile\": {\n";
-      std::cout << "\"timeTotal\": " << profile.timeTotal << "\n";      
-    std::cout << "}\n";
+    std::cout << "\"profiles\": [\n";
+    bool first = true;
+    for (auto && profile : profiles) {
+      if (!first) { std::cout << ",\n"; } else { first = false; }
+      std::cout << "{\n";
+      std::cout << "\"timeTotal\": " << profile.timeTotal << "\n";
+      std::cout << "}";
+    }
+    std::cout << "\n]\n";
   std::cout << "}\n";
 
   return 0;
