@@ -6,5 +6,5 @@ void findAllComponents(
     FindComponentsProfilingData * profile,
     DNeighborGraph const * graph
 ) {
-  findAllComponents<findNextUnvisitedCoreSuccessiveSimplifiedPolicy, frontierBasicPolicy> (nSm, d_visited, profile, graph);
+  findAllComponents<findNextUnvisitedCoreSuccessivePolicy, frontierBasicPolicy> (nSm, d_visited, profile, graph);
 }

@@ -22,8 +22,9 @@ struct FrontierData {
         IdxType * d_frontier;
     } frontiers[2];
     char currentFrontier = 0;
+    IdxType maxFrontierSize;
   
-    FrontierData(size_t maxFrontierSize) {
+    explicit FrontierData(size_t maxFrontierSize): maxFrontierSize(maxFrontierSize) {
         // TODO: Should we malloc everything at once?
         size_t frontierBufferSize = 2 * (1 + (std::size_t)maxFrontierSize);
         CUDA_CHECK(cudaMalloc(&this->d_frontierBuffer, frontierBufferSize * sizeof(IdxType)))
@@ -48,8 +49,13 @@ template <int FrontierPolicyKey> struct FindComponent;
 //   kernel_bfs_texture: kernel relying on texture memory for incidence lists
 // ******************************************************************************************************************************
 
-static __device__ void appendToFrontier(IdxType * cntFrontier, IdxType * frontier, IdxType vertex) {
+static __device__ __forceinline__ void trap() {
+    asm("trap;");
+}
+
+static __device__ void appendToFrontier(IdxType * cntFrontier, IdxType * frontier, IdxType maxFrontierSize, IdxType vertex) {
     IdxType old = atomicAdd(cntFrontier, 1);
+    if (old >= maxFrontierSize) trap();
     frontier[old] = vertex;
 }
 
@@ -62,7 +68,8 @@ static __global__ void kernel_bfs_texture(
     IdxType * cntFrontier,
     IdxType * frontier,
     IdxType * cntNewFrontier,
-    IdxType * newFrontier
+    IdxType * newFrontier,
+    IdxType maxFrontierSize
 ) {
     unsigned int tid = blockDim.x * blockIdx.x + threadIdx.x;
     unsigned int stride = blockDim.x * gridDim.x;
@@ -77,7 +84,7 @@ static __global__ void kernel_bfs_texture(
             unsigned int destinationVisited = d_visited[destination];
             if(destinationVisited <= 1) {
                 d_visited[destination] = visitedTag;
-                if (destinationVisited == 1) appendToFrontier(cntNewFrontier, newFrontier, destination);
+                if (destinationVisited == 1) appendToFrontier(cntNewFrontier, newFrontier, maxFrontierSize, destination);
             }
         }
     };
@@ -113,7 +120,8 @@ struct FindComponent<graphTexturePolicy> {
                 fd->frontiers[fd->currentFrontier].d_cntFrontier,
                 fd->frontiers[fd->currentFrontier].d_frontier,
                 fd->frontiers[!fd->currentFrontier].d_cntFrontier,
-                fd->frontiers[!fd->currentFrontier].d_frontier
+                fd->frontiers[!fd->currentFrontier].d_frontier,
+                fd->maxFrontierSize
             );
 
             IdxType cntNewFrontier;
@@ -409,7 +417,7 @@ static void findAllComponents(
     FindComponentsProfilingData * profile,
     DNeighborGraph const * graph
 ) {
-    FrontierData fd{graph->lenIncidenceAry};
+    FrontierData fd{3 * graph->lenIncidenceAry};
 
     IdxType nextFreeTag = 2;
     ManagedDeviceArray<IdxType> d_resultBuffer {2};
@@ -449,5 +457,5 @@ void findAllComponents(
     FindComponentsProfilingData * profile,
     DNeighborGraph const * graph
 ) {
-    findAllComponents<findNextUnvisitedCoreSuccessivePolicy>(nSm, d_visited, profile, graph);
+    findAllComponents<findNextUnvisitedCoreSuccessiveSimplifiedPolicy>(nSm, d_visited, profile, graph);
 }

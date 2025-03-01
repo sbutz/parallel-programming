@@ -24,8 +24,9 @@ struct FrontierData {
         IdxType * d_frontier;
     } frontiers[2];
     char currentFrontier = 0;
+    IdxType maxFrontierSize;
   
-    FrontierData(size_t maxFrontierSize) {
+    explicit FrontierData(IdxType maxFrontierSize): maxFrontierSize(maxFrontierSize) {
         // TODO: Should we malloc everything at once?
         size_t frontierBufferSize = 2 * (1 + (std::size_t)maxFrontierSize);
         CUDA_CHECK(cudaMalloc(&this->d_frontierBuffer, frontierBufferSize * sizeof(IdxType)))
@@ -39,6 +40,10 @@ struct FrontierData {
     }
 };
 
+static __device__ __forceinline__ void trap() {
+    asm("trap;");
+}
+
 // ******************************************************************************************************************************
 // FindComponent: template struct, FindComponent<FrontierPolicyKey>::findComponent will provide an interface to our BFS
 // ******************************************************************************************************************************
@@ -50,8 +55,9 @@ template <int FrontierPolicyKey> struct FindComponent;
 //   kernel_bfs: simple BFS kernel
 // ******************************************************************************************************************************
 
-static __device__ void appendToFrontier(IdxType * cntFrontier, IdxType * frontier, IdxType vertex) {
+static __device__ void appendToFrontier(IdxType * cntFrontier, IdxType * frontier, IdxType maxFrontierSize, IdxType vertex) {
     IdxType old = atomicAdd(cntFrontier, 1);
+    if (old >= maxFrontierSize) trap();
     frontier[old] = vertex;
 }
 
@@ -62,7 +68,8 @@ static __global__ void kernel_bfs(
     IdxType * cntFrontier,
     IdxType * frontier,
     IdxType * cntNewFrontier,
-    IdxType * newFrontier
+    IdxType * newFrontier,
+    IdxType maxFrontierSize
 ) {
     unsigned int tid = blockDim.x * blockIdx.x + threadIdx.x;
     unsigned int stride = blockDim.x * gridDim.x;
@@ -77,7 +84,7 @@ static __global__ void kernel_bfs(
             unsigned int destinationVisited = d_visited[destination];
             if(destinationVisited <= 1) {
                 d_visited[destination] = visitedTag;
-                if (destinationVisited == 1) appendToFrontier(cntNewFrontier, newFrontier, destination);
+                if (destinationVisited == 1) appendToFrontier(cntNewFrontier, newFrontier, maxFrontierSize, destination);
             }
         }
     };
@@ -113,7 +120,8 @@ struct FindComponent<frontierBasicPolicy> {
                 fd->frontiers[fd->currentFrontier].d_cntFrontier,
                 fd->frontiers[fd->currentFrontier].d_frontier,
                 fd->frontiers[!fd->currentFrontier].d_cntFrontier,
-                fd->frontiers[!fd->currentFrontier].d_frontier
+                fd->frontiers[!fd->currentFrontier].d_frontier,
+                fd->maxFrontierSize
             );
 
             IdxType cntNewFrontier;
@@ -134,13 +142,14 @@ struct FindComponent<frontierBasicPolicy> {
 
 static __device__ void appendToFrontierShared(
     IdxType * cntSharedFrontier, IdxType * sharedFrontier, unsigned int sharedFrontierSize,
-    IdxType * cntFrontier, IdxType * frontier, IdxType vertex
+    IdxType * cntFrontier, IdxType * frontier, IdxType maxFrontierSize, IdxType vertex
 ) {
     if (*cntSharedFrontier < sharedFrontierSize) {
         IdxType old = atomicAdd(cntSharedFrontier, 1);
         sharedFrontier[old] = vertex;
     } else {
         IdxType old = atomicAdd(cntFrontier, 1);
+        if (old >= maxFrontierSize) trap();
         frontier[old] = vertex;
     }
 }
@@ -148,10 +157,11 @@ static __device__ void appendToFrontierShared(
 static __device__ void copySharedToGlobalFrontier(
     IdxType * startPos,
     IdxType * cntSharedFrontier, IdxType * sharedFrontier, unsigned int sharedFrontierSize,
-    IdxType * cntGlobalFrontier, IdxType * globalFrontier
+    IdxType * cntGlobalFrontier, IdxType * globalFrontier, IdxType maxFrontierSize
 ) {
     if (threadIdx.x == 0) *startPos = atomicAdd(cntGlobalFrontier, *cntSharedFrontier);
     __syncthreads();
+    if (*startPos >= maxFrontierSize) trap();
     IdxType start = *startPos;
     IdxType stride = blockDim.x;
     for (IdxType i = threadIdx.x; i < sharedFrontierSize; i += stride) {
@@ -167,7 +177,8 @@ static __global__ void kernel_bfs_shared_frontier(
     IdxType * frontier,
     IdxType * cntNewFrontier,
     IdxType * newFrontier,
-    unsigned int sharedFrontierSize
+    unsigned int sharedFrontierSize,
+    IdxType maxFrontierSize
 ) {
     __shared__ IdxType cntSharedFrontier;
     __shared__ IdxType startPos;
@@ -191,7 +202,8 @@ static __global__ void kernel_bfs_shared_frontier(
                 d_visited[destination] = visitedTag;
                 if (destinationVisited == 1) appendToFrontierShared(
                     &cntSharedFrontier, sharedFrontier, sharedFrontierSize,
-                    cntNewFrontier, newFrontier, destination
+                    cntNewFrontier, newFrontier, maxFrontierSize,
+                    destination
                 );
             }
         }
@@ -207,7 +219,7 @@ static __global__ void kernel_bfs_shared_frontier(
     copySharedToGlobalFrontier(
         &startPos,
         &cntSharedFrontier, sharedFrontier, sharedFrontierSize,
-        cntNewFrontier, newFrontier
+        cntNewFrontier, newFrontier, maxFrontierSize
     );
 }
 
@@ -237,7 +249,8 @@ struct FindComponent<frontierSharedPolicy> {
                 fd->frontiers[fd->currentFrontier].d_frontier,
                 fd->frontiers[!fd->currentFrontier].d_cntFrontier,
                 fd->frontiers[!fd->currentFrontier].d_frontier,
-                sharedFrontierSize
+                sharedFrontierSize,
+                fd->maxFrontierSize
             );
 
             IdxType cntNewFrontier;
@@ -532,7 +545,7 @@ static void findAllComponents(
     FindComponentsProfilingData * profile,
     DNeighborGraph const * graph
 ) {
-    FrontierData fd{graph->lenIncidenceAry};
+    FrontierData fd{3 * graph->lenIncidenceAry};
 
     IdxType nextFreeTag = 2;
     ManagedDeviceArray<IdxType> d_resultBuffer {2};
@@ -553,5 +566,6 @@ static void findAllComponents(
             ++nextFreeTag;
             ++nIterations;
         }
+        CUDA_CHECK(cudaGetLastError())
     });
 }

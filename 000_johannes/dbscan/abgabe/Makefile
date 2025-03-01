@@ -17,12 +17,32 @@ SRCDIR=./src
 OBJDIR=./bin
 NVIDIADIR=./nvidia
 
-all: $(OBJDIR)/deviceQuery $(OBJDIR)/a_andrade $(OBJDIR)/a_andrade_texture $(OBJDIR)/b_boehm $(OBJDIR)/c_boehm
+all: $(OBJDIR)/deviceQuery \
+$(OBJDIR)/a_andrade \
+$(OBJDIR)/a_andrade_01 \
+$(OBJDIR)/a_andrade_02 \
+$(OBJDIR)/a_andrade_04 \
+$(OBJDIR)/a_andrade_05 \
+$(OBJDIR)/a_andrade_texture \
+$(OBJDIR)/b_boehm \
+$(OBJDIR)/c_boehm
 
 $(OBJDIR)/deviceQuery: $(OBJDIR)/deviceQuery.o
 	$(NVCC) $(GENCODE_FLAGS) -o $@ $(NVCC_LDFLAGS) $^
 
 $(OBJDIR)/a_andrade: $(OBJDIR)/a_andrade.o $(OBJDIR)/warmup.o $(OBJDIR)/a_bfs.o $(OBJDIR)/a_build_graph.o
+	$(NVCC) $(GENCODE_FLAGS) -o $@ $(NVCC_LDFLAGS) $^
+
+$(OBJDIR)/a_andrade_01: $(OBJDIR)/a_andrade.o $(OBJDIR)/warmup.o $(OBJDIR)/a_bfs_01_naive.o $(OBJDIR)/a_build_graph.o
+	$(NVCC) $(GENCODE_FLAGS) -o $@ $(NVCC_LDFLAGS) $^
+
+$(OBJDIR)/a_andrade_02: $(OBJDIR)/a_andrade.o $(OBJDIR)/warmup.o $(OBJDIR)/a_bfs_02_succ.o $(OBJDIR)/a_build_graph.o
+	$(NVCC) $(GENCODE_FLAGS) -o $@ $(NVCC_LDFLAGS) $^
+
+$(OBJDIR)/a_andrade_04: $(OBJDIR)/a_andrade.o $(OBJDIR)/warmup.o $(OBJDIR)/a_bfs_04_succmultwarp.o $(OBJDIR)/a_build_graph.o
+	$(NVCC) $(GENCODE_FLAGS) -o $@ $(NVCC_LDFLAGS) $^
+
+$(OBJDIR)/a_andrade_05: $(OBJDIR)/a_andrade.o $(OBJDIR)/warmup.o $(OBJDIR)/a_bfs_05_frontiershared.o $(OBJDIR)/a_build_graph.o
 	$(NVCC) $(GENCODE_FLAGS) -o $@ $(NVCC_LDFLAGS) $^
 
 $(OBJDIR)/a_andrade_texture: $(OBJDIR)/a_andrade.o $(OBJDIR)/warmup.o $(OBJDIR)/a_bfs_texture.o $(OBJDIR)/a_build_graph.o

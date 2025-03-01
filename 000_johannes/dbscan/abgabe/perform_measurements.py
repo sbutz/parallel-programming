@@ -6,10 +6,7 @@ import glob
 import re
 import subprocess
 
-MIN_SZ = 2 ** 3
-MAX_SZ = 2 ** 32 # 4 GiB
-N_RUNS = 100
-INPUT_FILE_PATH = os.path.join('.', 'input_data', 'test.txt')
+N_RUNS = 21
 
 jsonDirectory = os.path.join('.', 'measurements')
 
@@ -28,7 +25,16 @@ result = subprocess.run(
 with open(os.path.join(outDirectory, f'{timestamp}-devicequery.txt'), 'w') as file:
     file.write(result.stdout)
 
-binaries = [ 'a_andrade', 'c_boehm' ]
+binaries = [
+    'a_andrade',
+    'a_andrade_01',
+    'a_andrade_01',
+    'a_andrade_02',
+    'a_andrade_04',
+    'a_andrade_05',
+    'a_andrade_texture',
+    'c_boehm'
+]
 dataFileDirectory = os.path.join('.', 'sample_data')
 
 def getListOfDataFiles():
@@ -68,7 +74,7 @@ for binary in binaries:
         coreThreshold,r = getDbscanArguments(dataFileEntry['nPoints'])
 
         result = subprocess.run(
-            [cmd, dataFileWithPath, f'{coreThreshold:.0f}', f'{r}'],
+            [cmd, dataFileWithPath, f'{coreThreshold:.0f}', f'{r}', 'w', f'{N_RUNS}'],
             stdout=subprocess.PIPE, universal_newlines=True, check=True
         )
 
