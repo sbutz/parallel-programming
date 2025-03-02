@@ -10,7 +10,7 @@
 "timeNeighborCount": 226.629,
 "timePrefixScan": 0.697408,
 "timeBuildIncidenceList": 21289.3,
-"timeMarkNonCore": 0.02368,
+"timeMarkCoreUnvisited": 0.02368,
 "timeFindComponents": 39933.8,
 "timeTotal": 63649.8
 },
@@ -18,7 +18,7 @@
 "timeNeighborCount": 226.612,
 "timePrefixScan": 0.539552,
 "timeBuildIncidenceList": 21341.3,
-"timeMarkNonCore": 0.024224,
+"timeMarkCoreUnvisited": 0.024224,
 "timeFindComponents": 39782.8,
 "timeTotal": 63523.1
 },
@@ -26,7 +26,7 @@
 "timeNeighborCount": 226.556,
 "timePrefixScan": 0.504512,
 "timeBuildIncidenceList": 21255.5,
-"timeMarkNonCore": 0.023904,
+"timeMarkCoreUnvisited": 0.023904,
 "timeFindComponents": 40097.8,
 "timeTotal": 63751.9
 },
@@ -34,7 +34,7 @@
 "timeNeighborCount": 226.617,
 "timePrefixScan": 0.582752,
 "timeBuildIncidenceList": 21192.2,
-"timeMarkNonCore": 0.02608,
+"timeMarkCoreUnvisited": 0.02608,
 "timeFindComponents": 39919.2,
 "timeTotal": 63499.4
 },
@@ -42,7 +42,7 @@
 "timeNeighborCount": 226.622,
 "timePrefixScan": 0.538624,
 "timeBuildIncidenceList": 21356.1,
-"timeMarkNonCore": 0.02368,
+"timeMarkCoreUnvisited": 0.02368,
 "timeFindComponents": 39948.2,
 "timeTotal": 63718.4
 },
@@ -50,7 +50,7 @@
 "timeNeighborCount": 226.659,
 "timePrefixScan": 0.559104,
 "timeBuildIncidenceList": 21201.9,
-"timeMarkNonCore": 0.024288,
+"timeMarkCoreUnvisited": 0.024288,
 "timeFindComponents": 39779.1,
 "timeTotal": 63378.3
 },
@@ -58,7 +58,7 @@
 "timeNeighborCount": 226.985,
 "timePrefixScan": 0.503968,
 "timeBuildIncidenceList": 21125.5,
-"timeMarkNonCore": 0.025248,
+"timeMarkCoreUnvisited": 0.025248,
 "timeFindComponents": 39922.3,
 "timeTotal": 63445.2
 },
@@ -66,7 +66,7 @@
 "timeNeighborCount": 226.725,
 "timePrefixScan": 0.545728,
 "timeBuildIncidenceList": 21299.9,
-"timeMarkNonCore": 0.025888,
+"timeMarkCoreUnvisited": 0.025888,
 "timeFindComponents": 39874.7,
 "timeTotal": 63567.2
 },
@@ -74,7 +74,7 @@
 "timeNeighborCount": 226.724,
 "timePrefixScan": 0.518656,
 "timeBuildIncidenceList": 21322.2,
-"timeMarkNonCore": 0.024864,
+"timeMarkCoreUnvisited": 0.024864,
 "timeFindComponents": 40010.3,
 "timeTotal": 63728
 },
@@ -82,7 +82,7 @@
 "timeNeighborCount": 226.651,
 "timePrefixScan": 0.529984,
 "timeBuildIncidenceList": 21302.8,
-"timeMarkNonCore": 0.024096,
+"timeMarkCoreUnvisited": 0.024096,
 "timeFindComponents": 39807.2,
 "timeTotal": 63519.5
 },
@@ -90,7 +90,7 @@
 "timeNeighborCount": 226.818,
 "timePrefixScan": 0.493632,
 "timeBuildIncidenceList": 21243.9,
-"timeMarkNonCore": 0.024128,
+"timeMarkCoreUnvisited": 0.024128,
 "timeFindComponents": 39975.4,
 "timeTotal": 63619.6
 }
