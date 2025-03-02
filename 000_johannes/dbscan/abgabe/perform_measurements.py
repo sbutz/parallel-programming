@@ -33,8 +33,10 @@ binaries = [
     'a_andrade_04',
     'a_andrade_05',
     'a_andrade_texture',
-    'c_boehm'
-]
+    'b_boehm',
+    'c_boehm',
+] + [ f'b_boehm_{2**i:.0f}' for i in range(1,11) ]
+
 dataFileDirectory = os.path.join('.', 'sample_data')
 
 def getListOfDataFiles():

@@ -25,6 +25,16 @@ $(OBJDIR)/a_andrade_04 \
 $(OBJDIR)/a_andrade_05 \
 $(OBJDIR)/a_andrade_texture \
 $(OBJDIR)/b_boehm \
+$(OBJDIR)/b_boehm_2 \
+$(OBJDIR)/b_boehm_4 \
+$(OBJDIR)/b_boehm_8 \
+$(OBJDIR)/b_boehm_16 \
+$(OBJDIR)/b_boehm_32 \
+$(OBJDIR)/b_boehm_64 \
+$(OBJDIR)/b_boehm_128 \
+$(OBJDIR)/b_boehm_256 \
+$(OBJDIR)/b_boehm_512 \
+$(OBJDIR)/b_boehm_1024 \
 $(OBJDIR)/c_boehm
 
 $(OBJDIR)/deviceQuery: $(OBJDIR)/deviceQuery.o
@@ -49,6 +59,36 @@ $(OBJDIR)/a_andrade_texture: $(OBJDIR)/a_andrade.o $(OBJDIR)/warmup.o $(OBJDIR)/
 	$(NVCC) $(GENCODE_FLAGS) -o $@ $(NVCC_LDFLAGS) $^
 
 $(OBJDIR)/b_boehm: $(OBJDIR)/b_boehm.o $(OBJDIR)/warmup.o $(OBJDIR)/b_cluster_expansion.o
+	$(NVCC) $(GENCODE_FLAGS) -o $@ $(NVCC_LDFLAGS) $^
+
+$(OBJDIR)/b_boehm_2: $(OBJDIR)/b_boehm.o $(OBJDIR)/warmup.o $(OBJDIR)/b_cluster_expansion_2.o
+	$(NVCC) $(GENCODE_FLAGS) -o $@ $(NVCC_LDFLAGS) $^
+
+$(OBJDIR)/b_boehm_4: $(OBJDIR)/b_boehm.o $(OBJDIR)/warmup.o $(OBJDIR)/b_cluster_expansion_4.o
+	$(NVCC) $(GENCODE_FLAGS) -o $@ $(NVCC_LDFLAGS) $^
+
+$(OBJDIR)/b_boehm_8: $(OBJDIR)/b_boehm.o $(OBJDIR)/warmup.o $(OBJDIR)/b_cluster_expansion_8.o
+	$(NVCC) $(GENCODE_FLAGS) -o $@ $(NVCC_LDFLAGS) $^
+
+$(OBJDIR)/b_boehm_16: $(OBJDIR)/b_boehm.o $(OBJDIR)/warmup.o $(OBJDIR)/b_cluster_expansion_16.o
+	$(NVCC) $(GENCODE_FLAGS) -o $@ $(NVCC_LDFLAGS) $^
+
+$(OBJDIR)/b_boehm_32: $(OBJDIR)/b_boehm.o $(OBJDIR)/warmup.o $(OBJDIR)/b_cluster_expansion_32.o
+	$(NVCC) $(GENCODE_FLAGS) -o $@ $(NVCC_LDFLAGS) $^
+
+$(OBJDIR)/b_boehm_64: $(OBJDIR)/b_boehm.o $(OBJDIR)/warmup.o $(OBJDIR)/b_cluster_expansion_64.o
+	$(NVCC) $(GENCODE_FLAGS) -o $@ $(NVCC_LDFLAGS) $^
+
+$(OBJDIR)/b_boehm_128: $(OBJDIR)/b_boehm.o $(OBJDIR)/warmup.o $(OBJDIR)/b_cluster_expansion_128.o
+	$(NVCC) $(GENCODE_FLAGS) -o $@ $(NVCC_LDFLAGS) $^
+
+$(OBJDIR)/b_boehm_256: $(OBJDIR)/b_boehm.o $(OBJDIR)/warmup.o $(OBJDIR)/b_cluster_expansion_256.o
+	$(NVCC) $(GENCODE_FLAGS) -o $@ $(NVCC_LDFLAGS) $^
+
+$(OBJDIR)/b_boehm_512: $(OBJDIR)/b_boehm.o $(OBJDIR)/warmup.o $(OBJDIR)/b_cluster_expansion_512.o
+	$(NVCC) $(GENCODE_FLAGS) -o $@ $(NVCC_LDFLAGS) $^
+
+$(OBJDIR)/b_boehm_1024: $(OBJDIR)/b_boehm.o $(OBJDIR)/warmup.o $(OBJDIR)/b_cluster_expansion_1024.o
 	$(NVCC) $(GENCODE_FLAGS) -o $@ $(NVCC_LDFLAGS) $^
 
 $(OBJDIR)/c_boehm: $(OBJDIR)/c_boehm.o $(OBJDIR)/warmup.o $(OBJDIR)/c_cluster_expansion.o

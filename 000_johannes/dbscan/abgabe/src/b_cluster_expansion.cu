@@ -5,7 +5,12 @@
 #include <iostream>
 #include <cuda.h>
 
-constexpr IdxType maxSeedLength = 1024;
+// allow overwrite
+#ifndef MAX_SEED_LENGTH
+#define MAX_SEED_LENGTH 1024
+#endif
+
+constexpr IdxType maxSeedLength = MAX_SEED_LENGTH;
 
 struct CollisionHandlingData {
   unsigned int * d_synchronizer;
