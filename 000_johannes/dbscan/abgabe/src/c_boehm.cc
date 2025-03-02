@@ -201,6 +201,7 @@ int main (int argc, char * argv []) {
       std::cout << "\"is_core\": "; jsonPrintUnsignedIntegerVector(isCore); std::cout << ",\n";
       std::cout << "\"cluster_id\": "; jsonPrintUnsignedIntegerVector(clusters); std::cout << "\n";
     std::cout << "},\n";
+    std::cout << "\"profiles\": [\n";
     bool first = true;
     for (auto && profile : profiles) {
       if (!first) { std::cout << ",\n"; } else { first = false; }
