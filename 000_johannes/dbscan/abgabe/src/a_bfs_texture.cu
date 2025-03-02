@@ -417,7 +417,7 @@ static void findAllComponents(
     FindComponentsProfilingData * profile,
     DNeighborGraph const * graph
 ) {
-    FrontierData fd{3 * graph->lenIncidenceAry};
+    FrontierData fd{graph->lenIncidenceAry};
 
     IdxType nextFreeTag = 2;
     ManagedDeviceArray<IdxType> d_resultBuffer {2};
@@ -434,7 +434,7 @@ static void findAllComponents(
     ))
     CUDA_CHECK(cudaBindTextureToArray(startIndicesTexture, texArray))
 
-    profile->timeMarkNonCore = runAndMeasureCuda(markCoreUnvisited, d_visited, graph);
+    profile->timeMarkCoreUnvisited = runAndMeasureCuda(markCoreUnvisited, d_visited, graph);
     profile->timeFindComponents = runAndMeasureCuda([&]{
         IdxType nIterations = 0;
         IdxType startIdx = 1;

@@ -6,7 +6,7 @@ import glob
 import re
 import subprocess
 
-N_RUNS = 21
+N_RUNS = 11
 
 jsonDirectory = os.path.join('.', 'measurements')
 

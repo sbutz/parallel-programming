@@ -6,7 +6,7 @@
 #include <vector>
 
 struct FindComponentsProfilingData {
-  float timeMarkNonCore;
+  float timeMarkCoreUnvisited;
   float timeFindComponents;
 };
 

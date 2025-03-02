@@ -160,24 +160,24 @@ DNeighborGraph buildNeighborGraph(
     d_counts, d_xs, d_ys, n, coreThreshold, r
   );
 
-  IdxType * d_temp;
-  CUDA_CHECK(cudaMalloc(&d_temp, 2 * n * sizeof(IdxType)))
-  IdxType * d_dest1 = d_temp, * d_dest2 = d_dest1 + n;
-  IdxType * s;
-  profile->timePrefixScan = runAndMeasureCuda(
-    prefixScan,
-    &s,
-    d_dest1,
-    d_dest2,
-    d_counts,
-    n
-  );
-
   IdxType * d_startIndices;
-  CUDA_CHECK(cudaMalloc(&d_startIndices, (n + 1) * sizeof(IdxType)))
-  CUDA_CHECK(cudaMemset(d_startIndices, 0, sizeof(IdxType)))
-  CUDA_CHECK(cudaMemcpy(d_startIndices + 1, s, n * (sizeof(IdxType)), cudaMemcpyDeviceToDevice))
-  (void)cudaFree(d_temp);
+  {
+    auto && d_temp = ManagedDeviceArray<IdxType> (2 * n);
+    IdxType * d_dest1 = d_temp.ptr(), * d_dest2 = d_dest1 + n;
+    IdxType * s;
+    profile->timePrefixScan = runAndMeasureCuda(
+      prefixScan,
+      &s,
+      d_dest1,
+      d_dest2,
+      d_counts,
+      n
+    );
+
+    CUDA_CHECK(cudaMalloc(&d_startIndices, (n + 1) * sizeof(IdxType)))
+    CUDA_CHECK(cudaMemset(d_startIndices, 0, sizeof(IdxType)))
+    CUDA_CHECK(cudaMemcpy(d_startIndices + 1, s, n * (sizeof(IdxType)), cudaMemcpyDeviceToDevice))
+  }
 
   IdxType lenIncidenceAry;
   CUDA_CHECK(cudaMemcpy(&lenIncidenceAry, d_startIndices + n, sizeof(IdxType), cudaMemcpyDeviceToHost));

@@ -212,7 +212,7 @@ int main (int argc, char * argv []) {
       std::cout << "\"timeNeighborCount\": " << profile.timeNeighborCount << ",\n";
       std::cout << "\"timePrefixScan\": " << profile.timePrefixScan << ",\n";
       std::cout << "\"timeBuildIncidenceList\": " << profile.timeBuildIncidenceList << ",\n";      
-      std::cout << "\"timeMarkNonCore\": " << profile.timeMarkNonCore << ",\n";      
+      std::cout << "\"timeMarkCoreUnvisited\": " << profile.timeMarkCoreUnvisited << ",\n";      
       std::cout << "\"timeFindComponents\": " << profile.timeFindComponents << ",\n";      
       std::cout << "\"timeTotal\": " << profile.timeTotal << "\n";
       std::cout << "}";
